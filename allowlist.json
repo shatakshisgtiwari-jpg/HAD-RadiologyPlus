@@ -1,0 +1,10 @@
+{
+  "licenses": [
+    "Apache-2.0",
+    "GPL"
+  ],
+  "exclude": [
+    ".git/**",
+    "**/*.jpg"
+  ]
+}
