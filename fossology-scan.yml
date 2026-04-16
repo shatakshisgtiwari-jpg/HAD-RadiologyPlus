@@ -1,0 +1,29 @@
+name: FOSSology License Scan
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  license_scan:
+    runs-on: ubuntu-latest
+    name: Run FOSSology scan
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run FOSSology scan
+        id: fossology
+        uses: fossology/fossology-action@v1
+        with:
+          scan_mode: 'repo'
+          scanners: 'nomos ojo copyright keyword'
+          report_format: 'SPDX_JSON'
+
+      - name: Upload scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fossology-report
+          path: results/
