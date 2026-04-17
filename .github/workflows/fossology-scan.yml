@@ -14,12 +14,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run FOSSology scan
-        uses: fossology/fossology-action@v1
+        uses: fossology/fossology-action@v2   # <-- bumped from v1
         with:
           scan_mode: 'repo'
           scanners: 'nomos ojo copyright keyword'
           report_format: 'SPDX_JSON'
           allowlist_file_path: 'allowlist.json'
+          sbom_path: 'sbom.json'             # <-- explicitly declare if using SBOM
 
       - name: Upload scan results
         if: always()
