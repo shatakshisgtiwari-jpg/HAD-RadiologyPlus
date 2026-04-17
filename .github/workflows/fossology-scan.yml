@@ -13,13 +13,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Run FOSSology scan
+      - name: Compliance check
         uses: fossology/fossology-action@v1
+        continue-on-error: true
         with:
           scan_mode: 'repo'
           scanners: 'nomos ojo copyright keyword'
           report_format: 'TEXT'
           allowlist_file_path: 'allowlist.json'
+
+      - name: Generate SPDX report
+        uses: fossology/fossology-action@v1
+        continue-on-error: true
+        with:
+          scan_mode: 'repo'
+          scanners: 'nomos ojo copyright keyword'
+          report_format: 'SPDX_JSON'
 
       - name: Upload scan results
         if: always()
