@@ -5,6 +5,9 @@
   ],
   "exclude": [
     ".git/**",
-    "**/*.jpg"
+    "**/*.jpg",
+    ".github/**",
+    "Backend/mvnw",
+    "Backend/mvnw.cmd"
   ]
 }
