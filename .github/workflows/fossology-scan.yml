@@ -24,7 +24,7 @@ jobs:
 
       - name: Prepare for SPDX report
         run: |
-          rm -rf results/
+          sudo rm -rf results/
           mv allowlist.json allowlist.json.bak
 
       - name: Generate SPDX report
@@ -36,7 +36,8 @@ jobs:
           report_format: 'SPDX_JSON'
 
       - name: Restore allowlist
-        run: mv allowlist.json.bak allowlist.json
+        if: always()
+        run: mv allowlist.json.bak allowlist.json 2>/dev/null || true
 
       - name: Upload scan results
         if: always()
