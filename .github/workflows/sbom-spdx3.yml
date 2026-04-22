@@ -1,0 +1,93 @@
+name: SPDX 3.0 SBOM Generation
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  sbom_generation:
+    runs-on: ubuntu-latest
+    name: Generate SPDX 3.0 SBOM
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Step 1: FOSSology deep license & copyright scan (TEXT only) ──
+      # TEXT format avoids the SpdxReport.py bug entirely.
+      # FOSSology's nomos/ojo scanners have 3000+ license patterns —
+      # no other open-source tool matches this depth.
+      - name: FOSSology license & copyright scan
+        continue-on-error: true
+        uses: fossology/fossology-action@v1
+        with:
+          scan_mode: 'repo'
+          scanners: 'nomos ojo copyright keyword'
+          report_format: 'TEXT'
+
+      - name: Fix result permissions
+        if: always()
+        run: sudo chmod -R a+rw results/ 2>/dev/null || true
+
+      # ── Step 2: Syft SBOM generation (SPDX 2.3 — best available) ──
+      # Syft detects packages from package.json, pom.xml, and other
+      # ecosystem manifests. Its max SPDX version is 2.3.
+      # No CLI tool currently supports native SPDX 3.0 output.
+      - name: Install Syft
+        if: always()
+        run: curl -sSfL https://get.anchore.io/syft | sudo sh -s -- -b /usr/local/bin
+
+      - name: Generate SPDX 2.3 SBOM (Syft)
+        if: always()
+        run: |
+          syft dir:. -o spdx-json=results/sbom_syft_spdx23.json
+          echo "Syft SPDX 2.3 SBOM generated"
+
+      # ── Step 3: Convert to SPDX 3.0 JSON-LD ──
+      # This is the same approach FOSSology server uses (GSoC 2024 PR#2750):
+      # scan data → build SPDX 3.0 elements directly.
+      # Our converter reads SPDX 2.3 and outputs spec-compliant SPDX 3.0
+      # with Core, Software, and Licensing profiles.
+      - name: Set up Python
+        if: always()
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Generate SPDX 3.0 from Syft SBOM
+        if: always()
+        run: |
+          if [ -f results/sbom_syft_spdx23.json ]; then
+            echo "Generating SPDX 3.0 from Syft SBOM..."
+            python scripts/spdx_conv.py results/sbom_syft_spdx23.json results/sbom_spdx3.jsonld
+          else
+            echo "::error::Syft SPDX 2.3 SBOM not found"
+            exit 1
+          fi
+
+      - name: Generate SPDX 3.0 with clearing decisions
+        if: always()
+        run: |
+          if [ -f results/sbom_syft_spdx23.json ]; then
+            echo "Generating SPDX 3.0 with clearing decisions..."
+            python scripts/spdx_conv.py results/sbom_syft_spdx23.json results/sbom_spdx3_cleared.jsonld clearing-policy.json
+          else
+            echo "::warning::Syft SPDX 2.3 SBOM not found, skipping cleared output"
+          fi
+
+      - name: Display clearing report
+        if: always()
+        run: |
+          if [ -f results/sbom_spdx3_cleared_clearing_report.txt ]; then
+            echo "=== License Clearing Report ==="
+            cat results/sbom_spdx3_cleared_clearing_report.txt
+          else
+            echo "No clearing report generated"
+          fi
+
+      - name: Upload SBOM artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-reports
+          path: results/
