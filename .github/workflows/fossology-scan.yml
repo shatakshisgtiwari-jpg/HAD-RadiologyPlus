@@ -27,7 +27,7 @@ jobs:
           sudo rm -rf results/
           mv allowlist.json allowlist.json.bak
 
-      - name: Generate SPDX report
+      - name: Generate SPDX 2.3 report
         uses: fossology/fossology-action@v1
         continue-on-error: true
         with:
@@ -38,6 +38,22 @@ jobs:
       - name: Restore allowlist
         if: always()
         run: mv allowlist.json.bak allowlist.json 2>/dev/null || true
+
+      - name: Set up Python
+        if: always()
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Convert SPDX 2.3 to SPDX 3.0 JSON-LD
+        if: always()
+        run: |
+          if [ -f results/sbom_spdx.json ]; then
+            echo "Converting SPDX 2.3 to SPDX 3.0..."
+            python scripts/spdx2to3.py results/sbom_spdx.json results/sbom_spdx3.jsonld
+          else
+            echo "::warning::No SPDX 2.3 report found at results/sbom_spdx.json"
+          fi
 
       - name: Upload scan results
         if: always()
