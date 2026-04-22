@@ -45,15 +45,55 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Convert SPDX 2.3 to SPDX 3.0 JSON-LD
+      - name: Convert SPDX 2.3 to SPDX 3.0 (custom script)
         if: always()
         run: |
           if [ -f results/sbom_spdx.json ]; then
-            echo "Converting SPDX 2.3 to SPDX 3.0..."
+            echo "Converting SPDX 2.3 to SPDX 3.0 (custom)..."
             sudo chmod -R a+rw results/
-            python scripts/spdx_conv.py results/sbom_spdx.json results/sbom_spdx3.jsonld
+            python scripts/spdx_conv.py results/sbom_spdx.json results/sbom_spdx3_custom.jsonld
           else
             echo "::warning::No SPDX 2.3 report found at results/sbom_spdx.json"
+          fi
+
+      - name: Install spdx-tools
+        if: always()
+        run: pip install spdx-tools==0.8.5
+
+      - name: Convert SPDX 2.3 to SPDX 3.0 (spdx-tools official)
+        if: always()
+        run: |
+          if [ -f results/sbom_spdx.json ]; then
+            echo "Converting SPDX 2.3 to SPDX 3.0 (spdx-tools)..."
+            python scripts/spdx_conv_official.py results/sbom_spdx.json results/sbom_spdx3_official.jsonld
+          else
+            echo "::warning::No SPDX 2.3 report found at results/sbom_spdx.json"
+          fi
+
+      - name: Compare SPDX 3.0 outputs
+        if: always()
+        run: |
+          if [ -f results/sbom_spdx3_custom.jsonld ] && [ -f results/sbom_spdx3_official.jsonld ]; then
+            echo "=== Custom script output ==="
+            python -c "import json; d=json.load(open('results/sbom_spdx3_custom.jsonld')); print(f'Elements in @graph: {len(d.get(\"@graph\", []))}')"
+            echo ""
+            echo "=== spdx-tools official output ==="
+            python -c "import json; d=json.load(open('results/sbom_spdx3_official.jsonld')); print(f'Elements in @graph: {len(d.get(\"@graph\", []))}')"
+            echo ""
+            echo "=== Diff summary (structure) ==="
+            python -c "
+          import json
+          c = json.load(open('results/sbom_spdx3_custom.jsonld'))
+          o = json.load(open('results/sbom_spdx3_official.jsonld'))
+          c_types = sorted([e.get('type','?') for e in c.get('@graph',[])])
+          o_types = sorted([e.get('type','?') for e in o.get('@graph',[])])
+          print(f'Custom types:   {dict((t, c_types.count(t)) for t in set(c_types))}')
+          print(f'Official types: {dict((t, o_types.count(t)) for t in set(o_types))}')
+          print(f'Custom @context:   {c.get(\"@context\",\"?\")}')
+          print(f'Official @context: {o.get(\"@context\",\"?\")}')
+          "
+          else
+            echo "::warning::One or both SPDX 3.0 files missing, cannot compare"
           fi
 
       - name: Upload scan results
