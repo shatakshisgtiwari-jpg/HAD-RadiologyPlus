@@ -13,18 +13,28 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: FOSSology compliance scan
-        # continue-on-error required: FOSSology scanner has a known bug where
-        # SpdxReport.py crashes with 'NoneType & LicenseSymbol' TypeError when
-        # package.license_concluded is None during SPDX report finalization.
-        # Downstream steps check for results/sbom_spdx.json before proceeding.
-        continue-on-error: true
-        uses: fossology/fossology-action@v1
-        with:
-          scan_mode: 'repo'
-          scanners: 'nomos ojo copyright keyword'
-          report_format: 'SPDX_JSON'
-          allowlist_file_path: 'allowlist.json'
+      - name: FOSSology compliance scan (patched)
+        # FOSSology scanner has a bug in SpdxReport.py: package.license_concluded
+        # is None (not SpdxNone) for the main package, causing TypeError on the
+        # first file with an allowlisted license. We patch the one-line guard
+        # check inside the container before running the scanner.
+        run: |
+          docker pull fossology/fossology:scanner
+          docker run --rm \
+            -v "${{ github.workspace }}:/opt/repo" \
+            -w /opt/repo \
+            -e GITHUB_ACTIONS=true \
+            fossology/fossology:scanner bash -c "
+              # Patch FOSSology bug: add None to the license_concluded guard check
+              sed -i 's/in (SpdxNoAssertion(), SpdxNone())/in (None, SpdxNoAssertion(), SpdxNone())/' /bin/FoScanner/SpdxReport.py
+              /bin/fossologyscanner nomos ojo copyright keyword repo \
+                --allowlist-path allowlist.json \
+                --report SPDX_JSON
+            "
+
+      - name: Fix result permissions
+        if: always()
+        run: sudo chmod -R a+rw results/ 2>/dev/null || true
 
       - name: Set up Python
         if: always()
@@ -32,15 +42,26 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Convert SPDX 2.3 to SPDX 3.0 (custom script)
+      - name: Convert SPDX 2.3 to SPDX 3.0 (without clearing)
         if: always()
         run: |
           if [ -f results/sbom_spdx.json ]; then
-            echo "Converting SPDX 2.3 to SPDX 3.0 (custom + clearing decisions)..."
-            sudo chmod -R a+rw results/
-            python scripts/spdx_conv.py results/sbom_spdx.json results/sbom_spdx3_custom.jsonld allowlist.json
+            echo "Converting SPDX 2.3 to SPDX 3.0 (no clearing decisions)..."
+            python scripts/spdx_conv.py results/sbom_spdx.json results/sbom_spdx3.jsonld
           else
-            echo "::warning::No SPDX 2.3 report found at results/sbom_spdx.json"
+            echo "::error::No SPDX 2.3 report found at results/sbom_spdx.json"
+            exit 1
+          fi
+
+      - name: Convert SPDX 2.3 to SPDX 3.0 (with clearing decisions)
+        if: always()
+        run: |
+          if [ -f results/sbom_spdx.json ]; then
+            echo "Converting SPDX 2.3 to SPDX 3.0 (with clearing decisions)..."
+            python scripts/spdx_conv.py results/sbom_spdx.json results/sbom_spdx3_cleared.jsonld allowlist.json
+          else
+            echo "::error::No SPDX 2.3 report found at results/sbom_spdx.json"
+            exit 1
           fi
 
       - name: Install spdx-tools
@@ -51,17 +72,17 @@ jobs:
         if: always()
         run: |
           if [ -f results/sbom_spdx.json ]; then
-            echo "Converting SPDX 2.3 to SPDX 3.0 (spdx-tools)..."
+            echo "Converting SPDX 2.3 to SPDX 3.0 (spdx-tools official)..."
             python scripts/spdx_conv_official.py results/sbom_spdx.json results/sbom_spdx3_official.jsonld
           else
-            echo "::warning::No SPDX 2.3 report found at results/sbom_spdx.json"
+            echo "::warning::No SPDX 2.3 report found, skipping official conversion"
           fi
 
       - name: Compare SPDX 3.0 outputs
         if: always()
         run: |
-          if [ -f results/sbom_spdx3_custom.jsonld ] && [ -f results/sbom_spdx3_official.jsonld ]; then
-            python scripts/compare_converters.py results/sbom_spdx3_custom.jsonld results/sbom_spdx3_official.jsonld
+          if [ -f results/sbom_spdx3.jsonld ] && [ -f results/sbom_spdx3_official.jsonld ]; then
+            python scripts/compare_converters.py results/sbom_spdx3.jsonld results/sbom_spdx3_official.jsonld
           else
             echo "::warning::One or both SPDX 3.0 files missing, cannot compare"
           fi
@@ -69,11 +90,11 @@ jobs:
       - name: Display clearing report
         if: always()
         run: |
-          if [ -f results/sbom_spdx3_custom_clearing_report.txt ]; then
+          if [ -f results/sbom_spdx3_cleared_clearing_report.txt ]; then
             echo "=== License Clearing Report ==="
-            cat results/sbom_spdx3_custom_clearing_report.txt
+            cat results/sbom_spdx3_cleared_clearing_report.txt
           else
-            echo "No clearing report generated (allowlist may not have been provided)"
+            echo "No clearing report generated"
           fi
 
       - name: Upload scan results
