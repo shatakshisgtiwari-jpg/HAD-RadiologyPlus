@@ -30,21 +30,11 @@ jobs:
             -e GITHUB_REPOSITORY="${{ github.repository }}" \
             -e GITHUB_REPO_OWNER="${{ github.repository_owner }}" \
             -e GITHUB_REPO_URL="${{ github.repositoryUrl }}" \
-            fossology/fossology:scanner bash -c '
-              python3 << "PATCH"
-          import pathlib
-          p = pathlib.Path("/bin/FoScanner/SpdxReport.py")
-          src = p.read_text()
-          old = "in (SpdxNoAssertion(), SpdxNone()):"
-          new = "in (None, SpdxNoAssertion(), SpdxNone()):"
-          src = src.replace(old, new)
-          p.write_text(src)
-          print("Patched SpdxReport.py: added None to license_concluded guard")
-          PATCH
+            fossology/fossology:scanner bash -c "\
+              python3 /github/workspace/scripts/patch_fossology.py && \
               /bin/fossologyscanner nomos ojo copyright keyword repo \
                 --allowlist-path allowlist.json \
-                --report SPDX_JSON
-            '
+                --report SPDX_JSON"
 
       - name: Fix result permissions
         if: always()
