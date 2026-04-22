@@ -1,12 +1,20 @@
 {
   "licenses": [
+    "MIT",
     "Apache-2.0",
     "GPL"
   ],
   "exclude": [
     ".git/**",
-    "**/*.jpg",
     ".github/**",
+    "allowlist.json",
+    "**/*.jpg",
+    "**/*.jpeg",
+    "**/*.png",
+    "**/*.gif",
+    "**/*.ico",
+    "**/*.svg",
+    "**/*.webp",
     "Backend/mvnw",
     "Backend/mvnw.cmd"
   ]

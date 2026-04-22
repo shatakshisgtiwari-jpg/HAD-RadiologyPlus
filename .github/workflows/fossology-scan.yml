@@ -13,31 +13,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Compliance check
+      - name: FOSSology compliance scan
         uses: fossology/fossology-action@v1
-        continue-on-error: true
-        with:
-          scan_mode: 'repo'
-          scanners: 'nomos ojo copyright keyword'
-          report_format: 'TEXT'
-          allowlist_file_path: 'allowlist.json'
-
-      - name: Prepare for SPDX report
-        run: |
-          sudo rm -rf results/
-          mv allowlist.json allowlist.json.bak
-
-      - name: Generate SPDX 2.3 report
-        uses: fossology/fossology-action@v1
-        continue-on-error: true
         with:
           scan_mode: 'repo'
           scanners: 'nomos ojo copyright keyword'
           report_format: 'SPDX_JSON'
-
-      - name: Restore allowlist
-        if: always()
-        run: mv allowlist.json.bak allowlist.json 2>/dev/null || true
+          allowlist_file_path: 'allowlist.json'
 
       - name: Set up Python
         if: always()
@@ -49,9 +31,9 @@ jobs:
         if: always()
         run: |
           if [ -f results/sbom_spdx.json ]; then
-            echo "Converting SPDX 2.3 to SPDX 3.0 (custom)..."
+            echo "Converting SPDX 2.3 to SPDX 3.0 (custom + clearing decisions)..."
             sudo chmod -R a+rw results/
-            python scripts/spdx_conv.py results/sbom_spdx.json results/sbom_spdx3_custom.jsonld
+            python scripts/spdx_conv.py results/sbom_spdx.json results/sbom_spdx3_custom.jsonld allowlist.json
           else
             echo "::warning::No SPDX 2.3 report found at results/sbom_spdx.json"
           fi
@@ -74,26 +56,19 @@ jobs:
         if: always()
         run: |
           if [ -f results/sbom_spdx3_custom.jsonld ] && [ -f results/sbom_spdx3_official.jsonld ]; then
-            echo "=== Custom script output ==="
-            python -c "import json; d=json.load(open('results/sbom_spdx3_custom.jsonld')); print(f'Elements in @graph: {len(d.get(\"@graph\", []))}')"
-            echo ""
-            echo "=== spdx-tools official output ==="
-            python -c "import json; d=json.load(open('results/sbom_spdx3_official.jsonld')); print(f'Elements in @graph: {len(d.get(\"@graph\", []))}')"
-            echo ""
-            echo "=== Diff summary (structure) ==="
-            python -c "
-          import json
-          c = json.load(open('results/sbom_spdx3_custom.jsonld'))
-          o = json.load(open('results/sbom_spdx3_official.jsonld'))
-          c_types = sorted([e.get('type','?') for e in c.get('@graph',[])])
-          o_types = sorted([e.get('type','?') for e in o.get('@graph',[])])
-          print(f'Custom types:   {dict((t, c_types.count(t)) for t in set(c_types))}')
-          print(f'Official types: {dict((t, o_types.count(t)) for t in set(o_types))}')
-          print(f'Custom @context:   {c.get(\"@context\",\"?\")}')
-          print(f'Official @context: {o.get(\"@context\",\"?\")}')
-          "
+            python scripts/compare_converters.py results/sbom_spdx3_custom.jsonld results/sbom_spdx3_official.jsonld
           else
             echo "::warning::One or both SPDX 3.0 files missing, cannot compare"
+          fi
+
+      - name: Display clearing report
+        if: always()
+        run: |
+          if [ -f results/sbom_spdx3_custom_clearing_report.txt ]; then
+            echo "=== License Clearing Report ==="
+            cat results/sbom_spdx3_custom_clearing_report.txt
+          else
+            echo "No clearing report generated (allowlist may not have been provided)"
           fi
 
       - name: Upload scan results
