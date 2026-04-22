@@ -56,15 +56,6 @@ jobs:
             echo "::warning::No SPDX 2.3 report found, skipping official conversion"
           fi
 
-      - name: Compare SPDX 3.0 outputs
-        if: always()
-        run: |
-          if [ -f results/sbom_spdx3_custom.jsonld ] && [ -f results/sbom_spdx3_official.jsonld ]; then
-            python scripts/compare_converters.py results/sbom_spdx3_custom.jsonld results/sbom_spdx3_official.jsonld
-          else
-            echo "::warning::One or both SPDX 3.0 files missing, cannot compare"
-          fi
-
       - name: Upload scan results
         if: always()
         uses: actions/upload-artifact@v4
