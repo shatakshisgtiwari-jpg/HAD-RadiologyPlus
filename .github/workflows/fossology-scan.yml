@@ -50,6 +50,7 @@ jobs:
         run: |
           if [ -f results/sbom_spdx.json ]; then
             echo "Converting SPDX 2.3 to SPDX 3.0..."
+            sudo chmod -R a+rw results/
             python scripts/spdx_conv.py results/sbom_spdx.json results/sbom_spdx3.jsonld
           else
             echo "::warning::No SPDX 2.3 report found at results/sbom_spdx.json"
