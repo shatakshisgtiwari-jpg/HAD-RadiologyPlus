@@ -1,0 +1,19 @@
+{
+  "licenses": [
+    "MIT",
+    "CC0-1.0"
+  ],
+  "exclude": [
+    ".git/**",
+    ".github/**",
+    "**/*.jpg",
+    "**/*.jpeg",
+    "**/*.png",
+    "**/*.gif",
+    "**/*.ico",
+    "**/*.svg",
+    "**/*.webp",
+    "Backend/mvnw",
+    "Backend/mvnw.cmd"
+  ]
+}

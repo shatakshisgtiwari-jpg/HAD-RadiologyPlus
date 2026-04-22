@@ -42,6 +42,26 @@ jobs:
             exit 1
           fi
 
+      - name: Convert SPDX 2.3 to SPDX 3.0 (with clearing decisions)
+        if: always()
+        run: |
+          if [ -f results/sbom_spdx.json ]; then
+            echo "Converting SPDX 2.3 to SPDX 3.0 (with clearing decisions)..."
+            python scripts/spdx_conv.py results/sbom_spdx.json results/sbom_spdx3_cleared.jsonld clearing-policy.json
+          else
+            echo "::warning::No SPDX 2.3 report found, skipping cleared conversion"
+          fi
+
+      - name: Display clearing report
+        if: always()
+        run: |
+          if [ -f results/sbom_spdx3_cleared_clearing_report.txt ]; then
+            echo "=== License Clearing Report ==="
+            cat results/sbom_spdx3_cleared_clearing_report.txt
+          else
+            echo "No clearing report generated"
+          fi
+
       - name: Install spdx-tools
         if: always()
         run: pip install spdx-tools==0.8.5
