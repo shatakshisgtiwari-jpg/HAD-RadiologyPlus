@@ -30,7 +30,8 @@ jobs:
             -e GITHUB_REPOSITORY="${{ github.repository }}" \
             -e GITHUB_REPO_OWNER="${{ github.repository_owner }}" \
             -e GITHUB_REPO_URL="${{ github.repositoryUrl }}" \
-            fossology/fossology:scanner bash -c "\
+            --entrypoint bash \
+            fossology/fossology:scanner -c "\
               python3 /github/workspace/scripts/patch_fossology.py && \
               /bin/fossologyscanner nomos ojo copyright keyword repo \
                 --allowlist-path allowlist.json \
