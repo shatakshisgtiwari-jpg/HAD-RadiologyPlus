@@ -536,18 +536,18 @@ def parse_syft_json(syft_path: str) -> list[dict]:
         if lic_parts:
             license_str = " AND ".join(sorted(set(lic_parts)))
 
-        # Extract download location
+        # Extract download location (top-level or metadata.resolved)
         download_url = ""
-        for loc in art.get("locations", []):
-            if isinstance(loc, dict) and loc.get("path"):
-                # This is the source manifest path, not download URL
-                pass
         for url_field in ("downloadLocation", "sourceInfo"):
             if art.get(url_field):
                 download_url = art[url_field]
                 break
+        if not download_url:
+            metadata = art.get("metadata") or {}
+            if isinstance(metadata, dict) and metadata.get("resolved"):
+                download_url = metadata["resolved"]
 
-        # Extract integrity hash
+        # Extract integrity hash (top-level digests or metadata.integrity)
         integrity = ""
         for digest in art.get("digests", []):
             if isinstance(digest, dict):
@@ -556,6 +556,10 @@ def parse_syft_json(syft_path: str) -> list[dict]:
                 if algo and val:
                     integrity = f"{algo}:{val}"
                     break
+        if not integrity:
+            metadata = art.get("metadata") or {}
+            if isinstance(metadata, dict) and metadata.get("integrity"):
+                integrity = metadata["integrity"]
 
         # Source manifest path
         source_manifest = ""
@@ -649,6 +653,29 @@ def detect_and_parse_manifests(repo_root: str, syft_json_path: str | None = None
                 eco_counts[eco] = eco_counts.get(eco, 0) + 1
             for eco, cnt in sorted(eco_counts.items()):
                 print(f"    {eco}: {cnt}")
+
+            # Enrich npm packages with licenses from node_modules/
+            # Syft doesn't extract licenses from lockfiles; node_modules has them
+            npm_pkgs = [p for p in pkgs if p.get("ecosystem") == "npm"]
+            if npm_pkgs:
+                # Group by source manifest directory
+                manifest_dirs: dict[str, list[dict]] = {}
+                for p in npm_pkgs:
+                    src = p.get("source_manifest", "")
+                    if src:
+                        # source_manifest is relative like "FrontEnd/package-lock.json"
+                        manifest_dir = os.path.join(repo_root, os.path.dirname(src))
+                    else:
+                        manifest_dir = repo_root
+                    manifest_dirs.setdefault(manifest_dir, []).append(p)
+
+                total_enriched = 0
+                for mdir, mpkgs in manifest_dirs.items():
+                    enriched = enrich_npm_licenses_from_node_modules(mpkgs, mdir)
+                    total_enriched += enriched
+                if total_enriched:
+                    print(f"    npm license enrichment: {total_enriched} from node_modules")
+
             all_packages.extend(pkgs)
         except Exception as e:
             print(f"  [!] Failed to parse Syft JSON {syft_json_path}: {e}")
@@ -981,10 +1008,12 @@ def build_package_elements(
             }]
 
         # Purpose based on ecosystem
-        if pkg.get("ecosystem") == "npm":
+        ecosystem = pkg.get("ecosystem", "")
+        if ecosystem in ("npm", "maven", "pypi", "golang", "cargo",
+                         "composer", "gem", "nuget", "java-archive"):
             elem["software_primaryPurpose"] = "library"
-        elif pkg.get("ecosystem") == "maven":
-            elem["software_primaryPurpose"] = "library"
+        elif ecosystem == "github-action":
+            elem["software_primaryPurpose"] = "application"
 
         pkg_elements.append(elem)
 
