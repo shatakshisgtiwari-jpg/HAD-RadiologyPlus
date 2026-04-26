@@ -654,31 +654,21 @@ def detect_and_parse_manifests(repo_root: str, syft_json_path: str | None = None
             for eco, cnt in sorted(eco_counts.items()):
                 print(f"    {eco}: {cnt}")
 
-            # Enrich npm packages with licenses from node_modules/
-            # Syft doesn't extract licenses from lockfiles; node_modules has them
-            npm_pkgs = [p for p in pkgs if p.get("ecosystem") == "npm"]
+            # Fallback: enrich npm packages from node_modules/ if present
+            # (e.g. when Syft enrichment is unavailable or node_modules pre-exists)
+            npm_pkgs = [p for p in pkgs if p.get("ecosystem") == "npm" and not p.get("license")]
             if npm_pkgs:
-                # Group by source manifest directory
                 manifest_dirs: dict[str, list[dict]] = {}
                 for p in npm_pkgs:
                     src = p.get("source_manifest", "")
-                    if src:
-                        # source_manifest is relative like "FrontEnd/package-lock.json"
-                        manifest_dir = os.path.join(repo_root, os.path.dirname(src))
-                    else:
-                        manifest_dir = repo_root
-                    manifest_dirs.setdefault(manifest_dir, []).append(p)
+                    mdir = os.path.join(repo_root, os.path.dirname(src)) if src else repo_root
+                    manifest_dirs.setdefault(mdir, []).append(p)
 
                 total_enriched = 0
                 for mdir, mpkgs in manifest_dirs.items():
-                    nm_path = os.path.join(mdir, "node_modules")
-                    print(f"    enrichment: checking {mdir} (node_modules exists: {os.path.isdir(nm_path)}, pkgs: {len(mpkgs)})")
-                    enriched = enrich_npm_licenses_from_node_modules(mpkgs, mdir)
-                    total_enriched += enriched
+                    total_enriched += enrich_npm_licenses_from_node_modules(mpkgs, mdir)
                 if total_enriched:
                     print(f"    npm license enrichment: {total_enriched} from node_modules")
-                else:
-                    print(f"    npm license enrichment: 0 (node_modules not found or no licenses to add)")
 
             all_packages.extend(pkgs)
         except Exception as e:

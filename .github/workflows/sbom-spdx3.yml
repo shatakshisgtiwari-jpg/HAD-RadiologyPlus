@@ -29,33 +29,13 @@ jobs:
         if: always()
         run: sudo chmod -R a+rw results/ 2>/dev/null || true
 
-      # ── Step 1.5: Install npm dependencies for license metadata ──
-      # npm lockfiles often omit license fields. Running 'npm ci' creates
-      # node_modules/ so the builder can read license from each package's
-      # own package.json. This is generic — auto-detects all lockfiles.
-      - name: Install npm dependencies (for license enrichment)
-        if: always()
-        run: |
-          for lockfile in $(find . -name "package-lock.json" \
-            -not -path "*/node_modules/*" -not -path "*/.git/*"); do
-            dir=$(dirname "$lockfile")
-            echo "Installing npm deps in $dir ..."
-            (cd "$dir" && npm ci --ignore-scripts --no-audit --no-fund) || \
-            echo "  [!] npm ci failed in $dir (non-fatal)"
-            # Verify node_modules was created
-            if [ -d "$dir/node_modules" ]; then
-              count=$(ls "$dir/node_modules" | wc -l)
-              echo "  node_modules created: $count entries"
-            else
-              echo "  [!] node_modules NOT created in $dir"
-            fi
-          done
-
       # ── Step 2: Generic dependency extraction via Syft ──
       # Syft auto-detects all ecosystem lockfiles (npm, Maven, pip, Go,
       # Cargo, Composer, NuGet, Gems, etc.) and outputs a unified JSON
-      # with PURLs, versions, and licenses. This makes the pipeline
-      # project-agnostic without writing per-ecosystem parsers.
+      # with PURLs, versions, and licenses.
+      # SYFT_ENRICH=all fetches license metadata from package registries
+      # (npm, Maven Central, PyPI, Go proxy) so no ecosystem-specific
+      # install steps are needed.
       - name: Install Syft
         if: always()
         uses: anchore/sbom-action/download-syft@v0
@@ -63,17 +43,18 @@ jobs:
 
       - name: Run Syft dependency scan
         if: always()
+        env:
+          SYFT_ENRICH: all
         run: |
           mkdir -p results
           syft dir:. -o syft-json=results/syft_deps.json 2>/dev/null || \
             echo "[!] Syft scan failed (non-fatal, built-in parsers will be used)"
 
       # ── Step 3: Build SPDX 3.0 directly (no conversion) ──
-      # spdx3_builder.py collects data from four sources:
+      # spdx3_builder.py collects data from three sources:
       #   1. FOSSology findings (per-file license + copyright)
-      #   2. Syft JSON (generic multi-ecosystem dependency data)
-      #   3. Lock file parsing (npm, Maven — fallback if no Syft)
-      #   4. Filesystem walk (SHA-256, MIME type for every file)
+      #   2. Syft JSON (generic multi-ecosystem dependency + license data)
+      #   3. Filesystem walk (SHA-256, MIME type for every file)
       # Then builds SPDX 3.0 elements directly — no SPDX 2.3 intermediate.
       - name: Set up Python
         if: always()
