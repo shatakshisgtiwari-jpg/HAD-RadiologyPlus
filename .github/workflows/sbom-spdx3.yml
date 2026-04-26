@@ -29,6 +29,21 @@ jobs:
         if: always()
         run: sudo chmod -R a+rw results/ 2>/dev/null || true
 
+      # ── Step 1.5: Install npm dependencies for license metadata ──
+      # npm lockfiles often omit license fields. Running 'npm ci' creates
+      # node_modules/ so the builder can read license from each package's
+      # own package.json. This is generic — auto-detects all lockfiles.
+      - name: Install npm dependencies (for license enrichment)
+        if: always()
+        run: |
+          for lockfile in $(find . -name "package-lock.json" \
+            -not -path "*/node_modules/*" -not -path "*/.git/*"); do
+            dir=$(dirname "$lockfile")
+            echo "Installing npm deps in $dir ..."
+            (cd "$dir" && npm ci --ignore-scripts --no-audit --no-fund 2>/dev/null) || \
+            echo "  [!] npm ci failed in $dir (non-fatal)"
+          done
+
       # ── Step 2: Build SPDX 3.0 directly (no Syft, no conversion) ──
       # spdx3_builder.py collects data from three sources:
       #   1. FOSSology findings (per-file license + copyright)

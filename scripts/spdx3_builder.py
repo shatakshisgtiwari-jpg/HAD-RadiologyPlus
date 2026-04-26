@@ -412,6 +412,64 @@ def parse_npm_lockfile(lock_path: str) -> list[dict]:
     return packages
 
 
+def enrich_npm_licenses_from_node_modules(packages: list[dict], lock_dir: str) -> int:
+    """Enrich npm package license data from node_modules/*/package.json.
+
+    npm lockfiles (especially older npm versions) often omit the license field.
+    If node_modules/ exists (e.g. after 'npm ci'), read each package's own
+    package.json for its declared license. Fully project-agnostic.
+
+    Returns the number of packages enriched.
+    """
+    nm_dir = os.path.join(lock_dir, "node_modules")
+    if not os.path.isdir(nm_dir):
+        return 0
+
+    enriched = 0
+    for pkg in packages:
+        if pkg.get("ecosystem") != "npm":
+            continue
+        if pkg.get("license"):
+            continue  # Already has license, don't overwrite
+
+        # Resolve package.json path: node_modules/<name>/package.json
+        # Scoped packages: node_modules/@scope/name/package.json
+        pkg_json_path = os.path.join(nm_dir, pkg["name"], "package.json")
+        if not os.path.isfile(pkg_json_path):
+            continue
+
+        try:
+            with open(pkg_json_path, "r", encoding="utf-8") as f:
+                pkg_meta = json.load(f)
+
+            raw_license = pkg_meta.get("license", "")
+            # Handle dict format: {"type": "MIT", "url": "..."}
+            if isinstance(raw_license, dict):
+                raw_license = raw_license.get("type", "")
+            elif not isinstance(raw_license, str):
+                raw_license = ""
+
+            # Fallback: deprecated "licenses" array: [{"type":"MIT"}, ...]
+            if not raw_license:
+                licenses_arr = pkg_meta.get("licenses", [])
+                if isinstance(licenses_arr, list) and licenses_arr:
+                    parts = []
+                    for lic in licenses_arr:
+                        if isinstance(lic, dict) and lic.get("type"):
+                            parts.append(lic["type"])
+                        elif isinstance(lic, str):
+                            parts.append(lic)
+                    raw_license = " OR ".join(parts) if parts else ""
+
+            if raw_license and raw_license not in ("UNLICENSED",):
+                pkg["license"] = raw_license
+                enriched += 1
+        except (json.JSONDecodeError, OSError, KeyError):
+            continue
+
+    return enriched
+
+
 def parse_pom_xml(pom_path: str) -> list[dict]:
     """Parse Maven pom.xml for declared dependencies.
 
@@ -482,11 +540,14 @@ def detect_and_parse_manifests(repo_root: str) -> list[dict]:
             if fname == "package-lock.json":
                 try:
                     pkgs = parse_npm_lockfile(full_path)
+                    # Enrich licenses from node_modules if available
+                    enriched = enrich_npm_licenses_from_node_modules(pkgs, dirpath)
                     # Normalize manifest path for cross-referencing with findings
                     norm_rel = rel_path.replace("\\", "/")
                     for p in pkgs:
                         p["source_manifest"] = norm_rel
-                    print(f"  Parsed {rel_path}: {len(pkgs)} packages")
+                    lic_note = f" ({enriched} licenses from node_modules)" if enriched else ""
+                    print(f"  Parsed {rel_path}: {len(pkgs)} packages{lic_note}")
                     all_packages.extend(pkgs)
                 except Exception as e:
                     print(f"  [!] Failed to parse {rel_path}: {e}")
