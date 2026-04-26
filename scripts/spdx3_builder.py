@@ -671,10 +671,14 @@ def detect_and_parse_manifests(repo_root: str, syft_json_path: str | None = None
 
                 total_enriched = 0
                 for mdir, mpkgs in manifest_dirs.items():
+                    nm_path = os.path.join(mdir, "node_modules")
+                    print(f"    enrichment: checking {mdir} (node_modules exists: {os.path.isdir(nm_path)}, pkgs: {len(mpkgs)})")
                     enriched = enrich_npm_licenses_from_node_modules(mpkgs, mdir)
                     total_enriched += enriched
                 if total_enriched:
                     print(f"    npm license enrichment: {total_enriched} from node_modules")
+                else:
+                    print(f"    npm license enrichment: 0 (node_modules not found or no licenses to add)")
 
             all_packages.extend(pkgs)
         except Exception as e:

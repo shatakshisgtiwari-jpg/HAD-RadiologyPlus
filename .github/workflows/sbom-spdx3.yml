@@ -40,8 +40,15 @@ jobs:
             -not -path "*/node_modules/*" -not -path "*/.git/*"); do
             dir=$(dirname "$lockfile")
             echo "Installing npm deps in $dir ..."
-            (cd "$dir" && npm ci --ignore-scripts --no-audit --no-fund 2>/dev/null) || \
+            (cd "$dir" && npm ci --ignore-scripts --no-audit --no-fund) || \
             echo "  [!] npm ci failed in $dir (non-fatal)"
+            # Verify node_modules was created
+            if [ -d "$dir/node_modules" ]; then
+              count=$(ls "$dir/node_modules" | wc -l)
+              echo "  node_modules created: $count entries"
+            else
+              echo "  [!] node_modules NOT created in $dir"
+            fi
           done
 
       # ── Step 2: Generic dependency extraction via Syft ──
