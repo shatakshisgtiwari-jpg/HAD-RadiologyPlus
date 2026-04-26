@@ -44,11 +44,29 @@ jobs:
             echo "  [!] npm ci failed in $dir (non-fatal)"
           done
 
-      # ── Step 2: Build SPDX 3.0 directly (no Syft, no conversion) ──
-      # spdx3_builder.py collects data from three sources:
+      # ── Step 2: Generic dependency extraction via Syft ──
+      # Syft auto-detects all ecosystem lockfiles (npm, Maven, pip, Go,
+      # Cargo, Composer, NuGet, Gems, etc.) and outputs a unified JSON
+      # with PURLs, versions, and licenses. This makes the pipeline
+      # project-agnostic without writing per-ecosystem parsers.
+      - name: Install Syft
+        if: always()
+        uses: anchore/sbom-action/download-syft@v0
+        id: syft
+
+      - name: Run Syft dependency scan
+        if: always()
+        run: |
+          mkdir -p results
+          syft dir:. -o syft-json=results/syft_deps.json 2>/dev/null || \
+            echo "[!] Syft scan failed (non-fatal, built-in parsers will be used)"
+
+      # ── Step 3: Build SPDX 3.0 directly (no conversion) ──
+      # spdx3_builder.py collects data from four sources:
       #   1. FOSSology findings (per-file license + copyright)
-      #   2. Lock file parsing (npm, Maven — with license from metadata)
-      #   3. Filesystem walk (SHA-256, MIME type for every file)
+      #   2. Syft JSON (generic multi-ecosystem dependency data)
+      #   3. Lock file parsing (npm, Maven — fallback if no Syft)
+      #   4. Filesystem walk (SHA-256, MIME type for every file)
       # Then builds SPDX 3.0 elements directly — no SPDX 2.3 intermediate.
       - name: Set up Python
         if: always()
@@ -62,6 +80,7 @@ jobs:
           python scripts/spdx3_builder.py \
             --repo-root . \
             --fossology-report results/ \
+            --syft-json results/syft_deps.json \
             --output results/sbom_spdx3.jsonld
 
       - name: Generate SPDX 3.0 SBOM (with clearing decisions)
@@ -70,6 +89,7 @@ jobs:
           python scripts/spdx3_builder.py \
             --repo-root . \
             --fossology-report results/ \
+            --syft-json results/syft_deps.json \
             --output results/sbom_spdx3_cleared.jsonld \
             --clearing-policy clearing-policy.json
 

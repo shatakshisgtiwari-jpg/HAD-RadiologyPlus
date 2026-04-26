@@ -470,6 +470,115 @@ def enrich_npm_licenses_from_node_modules(packages: list[dict], lock_dir: str) -
     return enriched
 
 
+def parse_syft_json(syft_path: str) -> list[dict]:
+    """Parse Syft JSON output for packages from any ecosystem.
+
+    Syft (https://github.com/anchore/syft) auto-detects lockfiles for npm,
+    Maven, pip, Go, Cargo, Composer, NuGet, Gems, etc. and outputs a unified
+    JSON with PURLs, versions, and licenses.
+
+    This function reads the Syft JSON and returns packages in the same format
+    as our ecosystem-specific parsers, making it a generic drop-in for any
+    ecosystem Syft supports.
+    """
+    with open(syft_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    artifacts = data.get("artifacts") or data.get("packages") or []
+    packages = []
+    seen = set()  # deduplicate by (name, version)
+
+    for art in artifacts:
+        name = art.get("name", "")
+        version = art.get("version", "")
+        if not name:
+            continue
+
+        key = (name, version)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        # Extract PURL (Syft provides it directly)
+        purl = ""
+        art_id = art.get("id", "")
+        if art_id.startswith("pkg:"):
+            purl = art_id
+        # Also check purl field or externalRefs
+        if not purl:
+            purl = art.get("purl", "")
+        if not purl:
+            for ref in art.get("externalRefs", []):
+                if ref.get("referenceType") == "purl":
+                    purl = ref.get("referenceLocator", "")
+                    break
+
+        # Extract ecosystem from PURL or type
+        ecosystem = art.get("type", "unknown").lower()
+        if purl:
+            # pkg:npm/... → npm, pkg:maven/... → maven, pkg:pypi/... → pypi
+            purl_type = purl.split(":", 1)[-1].split("/", 1)[0] if ":" in purl else ""
+            if purl_type:
+                ecosystem = purl_type
+
+        # Extract license(s)
+        license_str = ""
+        licenses_raw = art.get("licenses") or []
+        lic_parts = []
+        for lic in licenses_raw:
+            if isinstance(lic, str):
+                lic_parts.append(lic)
+            elif isinstance(lic, dict):
+                # Syft uses {"value": "MIT", "spdxExpression": "MIT", ...}
+                expr = lic.get("spdxExpression", "") or lic.get("value", "") or lic.get("name", "")
+                if expr:
+                    lic_parts.append(expr)
+        if lic_parts:
+            license_str = " AND ".join(sorted(set(lic_parts)))
+
+        # Extract download location
+        download_url = ""
+        for loc in art.get("locations", []):
+            if isinstance(loc, dict) and loc.get("path"):
+                # This is the source manifest path, not download URL
+                pass
+        for url_field in ("downloadLocation", "sourceInfo"):
+            if art.get(url_field):
+                download_url = art[url_field]
+                break
+
+        # Extract integrity hash
+        integrity = ""
+        for digest in art.get("digests", []):
+            if isinstance(digest, dict):
+                algo = digest.get("algorithm", "")
+                val = digest.get("value", "")
+                if algo and val:
+                    integrity = f"{algo}:{val}"
+                    break
+
+        # Source manifest path
+        source_manifest = ""
+        for loc in art.get("locations", []):
+            if isinstance(loc, dict) and loc.get("path"):
+                source_manifest = loc["path"].lstrip("./")
+                break
+
+        packages.append({
+            "name": name,
+            "version": version,
+            "ecosystem": ecosystem,
+            "purl": purl,
+            "download_url": download_url,
+            "integrity": integrity,
+            "license": license_str,
+            "dependencies": [],
+            "source_manifest": source_manifest,
+        })
+
+    return packages
+
+
 def parse_pom_xml(pom_path: str) -> list[dict]:
     """Parse Maven pom.xml for declared dependencies.
 
@@ -517,51 +626,74 @@ def parse_pom_xml(pom_path: str) -> list[dict]:
     return packages
 
 
-def detect_and_parse_manifests(repo_root: str) -> list[dict]:
+def detect_and_parse_manifests(repo_root: str, syft_json_path: str | None = None) -> list[dict]:
     """Auto-detect package manifests in the repo and parse them.
 
-    Scans for: package-lock.json, yarn.lock, pom.xml, requirements.txt, etc.
+    If a Syft JSON file is provided (--syft-json), uses that as the primary
+    source for ALL ecosystems. Otherwise falls back to built-in parsers for
+    npm (package-lock.json) and Maven (pom.xml).
+
     Project-independent: detects whatever manifests exist.
     """
     all_packages = []
 
-    for dirpath, dirnames, filenames in os.walk(repo_root):
-        # Skip excluded directories
-        rel_dir = os.path.relpath(dirpath, repo_root)
-        if any(part.startswith(".") or part in ("node_modules", "target", "build", "dist", "__pycache__")
-               for part in Path(rel_dir).parts):
-            dirnames.clear()
-            continue
+    # ── Primary: Syft JSON (covers all ecosystems) ──
+    if syft_json_path and os.path.isfile(syft_json_path):
+        try:
+            pkgs = parse_syft_json(syft_json_path)
+            print(f"  Parsed Syft JSON: {len(pkgs)} packages across all ecosystems")
+            # Show per-ecosystem breakdown
+            eco_counts: dict[str, int] = {}
+            for p in pkgs:
+                eco = p.get("ecosystem", "unknown")
+                eco_counts[eco] = eco_counts.get(eco, 0) + 1
+            for eco, cnt in sorted(eco_counts.items()):
+                print(f"    {eco}: {cnt}")
+            all_packages.extend(pkgs)
+        except Exception as e:
+            print(f"  [!] Failed to parse Syft JSON {syft_json_path}: {e}")
+            print(f"  [!] Falling back to built-in parsers")
+            syft_json_path = None  # fall through to built-in parsers
 
-        for fname in filenames:
-            full_path = os.path.join(dirpath, fname)
-            rel_path = os.path.relpath(full_path, repo_root)
+    # ── Fallback: built-in parsers (npm + Maven) ──
+    if not syft_json_path:
+        for dirpath, dirnames, filenames in os.walk(repo_root):
+            # Skip excluded directories
+            rel_dir = os.path.relpath(dirpath, repo_root)
+            if any(part.startswith(".") or part in ("node_modules", "target", "build", "dist", "__pycache__")
+                   for part in Path(rel_dir).parts):
+                dirnames.clear()
+                continue
 
-            if fname == "package-lock.json":
-                try:
-                    pkgs = parse_npm_lockfile(full_path)
-                    # Enrich licenses from node_modules if available
-                    enriched = enrich_npm_licenses_from_node_modules(pkgs, dirpath)
-                    # Normalize manifest path for cross-referencing with findings
-                    norm_rel = rel_path.replace("\\", "/")
-                    for p in pkgs:
-                        p["source_manifest"] = norm_rel
-                    lic_note = f" ({enriched} licenses from node_modules)" if enriched else ""
-                    print(f"  Parsed {rel_path}: {len(pkgs)} packages{lic_note}")
-                    all_packages.extend(pkgs)
-                except Exception as e:
-                    print(f"  [!] Failed to parse {rel_path}: {e}")
+            for fname in filenames:
+                full_path = os.path.join(dirpath, fname)
+                rel_path = os.path.relpath(full_path, repo_root)
 
-            elif fname == "pom.xml":
-                try:
-                    pkgs = parse_pom_xml(full_path)
-                    norm_rel = rel_path.replace("\\", "/")
-                    for p in pkgs:
-                        p["source_manifest"] = norm_rel
-                    print(f"  Parsed {rel_path}: {len(pkgs)} packages")
-                    all_packages.extend(pkgs)
-                except Exception as e:
-                    print(f"  [!] Failed to parse {rel_path}: {e}")
+                if fname == "package-lock.json":
+                    try:
+                        pkgs = parse_npm_lockfile(full_path)
+                        # Enrich licenses from node_modules if available
+                        enriched = enrich_npm_licenses_from_node_modules(pkgs, dirpath)
+                        # Normalize manifest path for cross-referencing with findings
+                        norm_rel = rel_path.replace("\\", "/")
+                        for p in pkgs:
+                            p["source_manifest"] = norm_rel
+                        lic_note = f" ({enriched} licenses from node_modules)" if enriched else ""
+                        print(f"  Parsed {rel_path}: {len(pkgs)} packages{lic_note}")
+                        all_packages.extend(pkgs)
+                    except Exception as e:
+                        print(f"  [!] Failed to parse {rel_path}: {e}")
+
+                elif fname == "pom.xml":
+                    try:
+                        pkgs = parse_pom_xml(full_path)
+                        norm_rel = rel_path.replace("\\", "/")
+                        for p in pkgs:
+                            p["source_manifest"] = norm_rel
+                        print(f"  Parsed {rel_path}: {len(pkgs)} packages")
+                        all_packages.extend(pkgs)
+                    except Exception as e:
+                        print(f"  [!] Failed to parse {rel_path}: {e}")
 
     return all_packages
 
@@ -1150,6 +1282,7 @@ def build(
     report_dir: str | None,
     output_path: str,
     clearing_policy_path: str | None = None,
+    syft_json_path: str | None = None,
 ) -> None:
     """Main orchestrator: collect → build → clear → validate → write."""
 
@@ -1173,7 +1306,7 @@ def build(
 
     # 1.2 Package manifests
     print(f"\n  [1.2] Package manifest detection:")
-    packages = detect_and_parse_manifests(repo_root)
+    packages = detect_and_parse_manifests(repo_root, syft_json_path=syft_json_path)
     print(f"  Total packages detected: {len(packages)}")
 
     # 1.3 Filesystem walk
@@ -1347,6 +1480,9 @@ Examples:
   # With clearing decisions
   python spdx3_builder.py --repo-root . --fossology-report results/ --output results/sbom_spdx3_cleared.jsonld --clearing-policy clearing-policy.json
 
+  # With Syft for generic multi-ecosystem dependency detection
+  python spdx3_builder.py --repo-root . --fossology-report results/ --syft-json results/syft_deps.json --output results/sbom_spdx3.jsonld
+
   # Without FOSSology (lock files + filesystem only)
   python spdx3_builder.py --repo-root . --output results/sbom_spdx3.jsonld
         """,
@@ -1355,6 +1491,8 @@ Examples:
     parser.add_argument("--fossology-report", default=None, help="Path to directory containing FOSSology report files")
     parser.add_argument("--output", required=True, help="Output path for SPDX 3.0 JSON-LD file")
     parser.add_argument("--clearing-policy", default=None, help="Path to clearing-policy.json for clearing decisions")
+    parser.add_argument("--syft-json", default=None,
+                        help="Path to Syft JSON output for generic multi-ecosystem dependency extraction")
 
     args = parser.parse_args()
 
@@ -1367,6 +1505,7 @@ Examples:
         report_dir=args.fossology_report,
         output_path=args.output,
         clearing_policy_path=args.clearing_policy,
+        syft_json_path=args.syft_json,
     )
 
 
