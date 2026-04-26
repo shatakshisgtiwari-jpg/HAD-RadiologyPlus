@@ -911,7 +911,7 @@ def build_creation_info(base_uri: str) -> tuple[dict, list[dict]]:
     creation_info = {
         "@type": "CreationInfo",
         "@id": "_:creationinfo",
-        "specVersion": "3.0.0",
+        "specVersion": "3.0.1",
         "created": now,
         "createdBy": created_by_ids,
         "createdUsing": created_using_ids,
@@ -1342,7 +1342,13 @@ def build(
             clearing_policy = json.load(f)
 
     print(f"\n  [1.3] Filesystem walk:")
-    files = walk_filesystem(repo_root, [])
+    # Auto-exclude the output directory to prevent the plain SBOM from
+    # appearing in the cleared SBOM's file inventory.
+    output_dir = os.path.relpath(os.path.dirname(os.path.abspath(output_path)), repo_root)
+    auto_excludes = []
+    if not output_dir.startswith(".."):
+        auto_excludes.append(output_dir.replace("\\", "/") + "/**")
+    files = walk_filesystem(repo_root, auto_excludes)
     print(f"  Total files inventoried: {len(files)}")
 
     # 1.4 Merge all data sources
@@ -1411,7 +1417,7 @@ def build(
         "@type": "SpdxDocument",
         "@id": doc_id,
         "creationInfo": "_:creationinfo",
-        "specVersion": "3.0.0",
+        "specVersion": "3.0.1",
         "name": doc_name,
         "dataLicense": "CC0-1.0",
         "profileConformance": profiles,
