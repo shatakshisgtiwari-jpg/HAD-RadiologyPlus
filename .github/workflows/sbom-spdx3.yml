@@ -14,16 +14,16 @@ jobs:
         uses: actions/checkout@v4
 
       # ── Step 1: FOSSology copyright scan ──
-      # Uses SPDX_JSON format for structured per-file copyright findings.
-      # The JSON is treated as raw scanner output — copyright data is
-      # extracted and fed into the SPDX 3.0 builder directly.
+      # TEXT format produces copyrights.txt directly from the copyright
+      # agent — no SPDX 2.3 intermediate. The builder parses this
+      # and produces SPDX 3.0 directly.
       - name: FOSSology copyright scan
         continue-on-error: true
         uses: fossology/fossology-action@v1
         with:
           scan_mode: 'repo'
           scanners: 'copyright'
-          report_format: 'SPDX_JSON'
+          report_format: 'TEXT'
 
       - name: Fix result permissions
         if: always()

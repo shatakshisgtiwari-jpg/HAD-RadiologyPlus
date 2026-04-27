@@ -7,7 +7,7 @@
 SPDX 3.0 SBOM Direct Builder
 
 Generates SPDX 3.0 JSON-LD directly from raw data sources:
-  1. FOSSology copyright scan findings (TEXT)
+  1. FOSSology copyright agent output (copyrights.txt)
   2. Built-in package manifest parsers (npm, Maven)
   3. Filesystem walk with checksums and MIME types
 
@@ -175,68 +175,22 @@ MIME_TO_PURPOSE = {
 # Phase 1: Data Collection
 # ═════════════════════════════════════════════════════════════════════
 
-def extract_copyrights_from_json(report_path: str) -> dict[str, dict]:
-    """Extract per-file copyright findings from FOSSology JSON scanner output.
+def extract_copyrights_from_text(report_path: str) -> dict[str, dict]:
+    """Extract per-file copyright findings from FOSSology copyright agent TEXT output.
 
-    Reads the JSON produced by FOSSology (SPDX_JSON format) and extracts
-    only copyright data. The JSON structure is used purely as raw scanner
-    output — no SPDX 2.3 document conversion is performed.
+    Parses the copyrights.txt produced by the FOSSology copyright agent.
+    Format:
+        Following copyrights found:
+        File: path/to/file
+        Copyright:               (or "Copyrights:")
+        \tcopyright text at line N
+        \tanother finding at line N
+        File: next/file
+        ...
 
     Returns: {
         "path/to/file": {
             "licenses": [],
-            "copyrights": ["Copyright 2026 Author"],
-            "checksums": {"sha256": "abc...", "md5": "def..."},
-        }
-    }
-    """
-    with open(report_path, "r", encoding="utf-8") as f:
-        doc = json.load(f)
-
-    # Validate this looks like a FOSSology scanner output
-    if not isinstance(doc, dict):
-        return {}
-
-    findings = {}
-    algo_map = {"MD5": "md5", "SHA1": "sha1", "SHA256": "sha256", "SHA512": "sha512"}
-
-    for file_entry in doc.get("files", []):
-        path = file_entry.get("fileName", "")
-        # Normalize path: strip leading "./" or "/opt/repo/" prefixes
-        path = re.sub(r"^(\./|/opt/repo/)", "", path)
-        if not path:
-            continue
-
-        entry = {"licenses": [], "copyrights": [], "checksums": {}}
-
-        # Extract copyright text
-        cr = file_entry.get("copyrightText", "")
-        if cr and cr not in ("NOASSERTION", "NONE"):
-            entry["copyrights"].append(cr)
-
-        # Extract checksums (useful for file integrity in the SPDX 3.0 output)
-        for cs in file_entry.get("checksums", []):
-            algo = algo_map.get(cs.get("algorithm", ""), "")
-            val = cs.get("checksumValue", "")
-            if algo and val:
-                entry["checksums"][algo] = val
-
-        if entry["copyrights"] or entry["checksums"]:
-            findings[path] = entry
-
-    return findings
-
-
-def extract_findings_from_text(report_path: str) -> dict[str, dict]:
-    """Extract per-file findings from FOSSology TEXT report.
-
-    Handles common TEXT output patterns:
-      - "filepath: Copyright ..."
-      - Lines with scanner prefixes like "copyright:::"
-
-    Returns: {
-        "path/to/file": {
-            "licenses": [...],
             "copyrights": ["Copyright 2026 Author"],
             "checksums": {},
         }
@@ -246,91 +200,62 @@ def extract_findings_from_text(report_path: str) -> dict[str, dict]:
         lines = f.readlines()
 
     findings: dict[str, dict] = {}
+    current_file = None
 
-    # Pattern: "./path/to/file: LicenseName" or "./path/to/file: Copyright ..."
-    file_finding_re = re.compile(
-        r"^\.?/?(.+?):\s+(.+)$"
-    )
-    # Pattern: "scanner:::./path:::finding"
-    triple_colon_re = re.compile(
-        r"^(\w+):::\.?/?(.+?):::(.+)$"
-    )
+    # Pattern: "File: path/to/file"
+    file_header_re = re.compile(r"^File:\s+(.+)$")
+    # Pattern: "\tfinding text at line N" or "\tfinding text at lines N, M"
+    finding_re = re.compile(r"^\t(.+?)\s+at\s+lines?\s+[\d,\s]+$")
 
     for line in lines:
-        line = line.strip()
-        if not line or line.startswith("#") or line.startswith("="):
-            continue
+        raw = line.rstrip("\n\r")
 
-        filepath = finding = None
-
-        # Try triple-colon format first
-        m = triple_colon_re.match(line)
+        # Check for file header
+        m = file_header_re.match(raw)
         if m:
-            filepath = m.group(2)
-            finding = m.group(3).strip()
-        else:
-            # Try "path: finding" format
-            m = file_finding_re.match(line)
-            if m:
-                candidate_path = m.group(1).strip()
-                # Only accept if it looks like a file path (has extension or /)
-                if "." in candidate_path or "/" in candidate_path:
-                    filepath = candidate_path
-                    finding = m.group(2).strip()
-
-        if not filepath or not finding:
+            current_file = m.group(1).strip()
+            current_file = re.sub(r"^(\./|/opt/repo/)", "", current_file)
+            if current_file not in findings:
+                findings[current_file] = {"licenses": [], "copyrights": [], "checksums": {}}
             continue
 
-        filepath = re.sub(r"^(\./|/opt/repo/)", "", filepath)
+        # Check for copyright finding (tab-indented line)
+        if current_file and raw.startswith("\t"):
+            m = finding_re.match(raw)
+            if m:
+                finding = m.group(1).strip()
+            else:
+                # Some lines may not have "at line N" suffix
+                finding = raw.strip()
 
-        if filepath not in findings:
-            findings[filepath] = {"licenses": [], "copyrights": [], "checksums": {}}
+            if finding and finding not in ("Copyrights:", "Copyright:", "Following copyrights found:"):
+                findings[current_file]["copyrights"].append(finding)
+            continue
 
-        # Classify finding: copyright vs license
-        if finding.lower().startswith("copyright"):
-            findings[filepath]["copyrights"].append(finding)
-        else:
-            # Strip scanner tag like "[nomos]"
-            clean = re.sub(r"\s*\[[\w-]+\]\s*$", "", finding).strip()
-            if clean and clean not in ("NOASSERTION", "NONE"):
-                if clean not in findings[filepath]["licenses"]:
-                    findings[filepath]["licenses"].append(clean)
+        # Skip header lines like "Copyrights:", "Copyright:", "Following copyrights found:"
 
-    return findings
+    # Remove entries with no actual findings
+    return {k: v for k, v in findings.items() if v["copyrights"]}
 
 
 def collect_fossology_findings(report_dir: str) -> dict[str, dict]:
-    """Extract per-file copyright findings from FOSSology scanner output.
-
-    Tries JSON first (richer structured data with checksums), falls back to TEXT.
-    """
+    """Extract per-file copyright findings from FOSSology copyright agent TEXT output."""
     if not os.path.isdir(report_dir):
         print(f"  [!] Report directory not found: {report_dir}")
         return {}
 
-    # Try JSON files first (FOSSology SPDX_JSON scanner output)
-    json_files = sorted(Path(report_dir).glob("*.json"))
-    for jf in json_files:
-        try:
-            findings = extract_copyrights_from_json(str(jf))
-            if findings:
-                print(f"  Parsed JSON scanner output: {jf.name} ({len(findings)} files with copyright data)")
-                return findings
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            print(f"  [!] Failed to parse {jf.name}: {e}")
-
-    # Fallback: TEXT files
+    # Look for copyright agent TEXT output (copyrights.txt)
     txt_files = sorted(Path(report_dir).glob("*.txt"))
     for tf in txt_files:
         try:
-            findings = extract_findings_from_text(str(tf))
+            findings = extract_copyrights_from_text(str(tf))
             if findings:
-                print(f"  Parsed TEXT report: {tf.name} ({len(findings)} files)")
+                print(f"  Parsed copyright agent output: {tf.name} ({len(findings)} files)")
                 return findings
         except Exception as e:
             print(f"  [!] Failed to parse {tf.name}: {e}")
 
-    print("  [!] No FOSSology report found or parseable")
+    print("  [!] No FOSSology copyright report found or parseable")
     return {}
 
 
