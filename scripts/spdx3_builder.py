@@ -1097,12 +1097,13 @@ def build(
     else:
         print("  [!] No report directory specified, skipping FOSSology data")
 
-    # 1.2 Package manifests
-    print(f"\n  [1.2] Package manifest detection:")
-    packages = detect_and_parse_manifests(repo_root)
-    print(f"  Total packages detected: {len(packages)}")
+    # 1.2 Package manifests (commented out — using only agent output)
+    # print(f"\n  [1.2] Package manifest detection:")
+    # packages = detect_and_parse_manifests(repo_root)
+    # print(f"  Total packages detected: {len(packages)}")
+    packages = []
 
-    # 1.3 Filesystem walk
+    # 1.3 Filesystem walk (commented out — using only agent output)
     # Load clearing policy (if available) — used in Phase 3 for annotations,
     # but NOT for excluding files from the walk. All files must appear in the
     # SBOM so they can receive CLEARED/EXCLUDED/FLAGGED annotations.
@@ -1111,27 +1112,36 @@ def build(
         with open(clearing_policy_path, "r", encoding="utf-8") as f:
             clearing_policy = json.load(f)
 
-    print(f"\n  [1.3] Filesystem walk:")
-    # Auto-exclude the output directory to prevent the plain SBOM from
-    # appearing in the cleared SBOM's file inventory.
-    output_dir = os.path.relpath(os.path.dirname(os.path.abspath(output_path)), repo_root)
-    auto_excludes = []
-    if not output_dir.startswith(".."):
-        auto_excludes.append(output_dir.replace("\\", "/") + "/**")
-    files = walk_filesystem(repo_root, auto_excludes)
-    print(f"  Total files inventoried: {len(files)}")
+    # print(f"\n  [1.3] Filesystem walk:")
+    # output_dir = os.path.relpath(os.path.dirname(os.path.abspath(output_path)), repo_root)
+    # auto_excludes = []
+    # if not output_dir.startswith(".."):
+    #     auto_excludes.append(output_dir.replace("\\", "/") + "/**")
+    # files = walk_filesystem(repo_root, auto_excludes)
+    # print(f"  Total files inventoried: {len(files)}")
 
-    # 1.4 Merge all data sources
-    print(f"\n  [1.4] Merging data sources:")
-    packages, files = merge_data(findings, packages, files)
+    # Build file list directly from FOSSology findings
+    files = []
+    for path, data in findings.items():
+        files.append({
+            "path": path,
+            "sha256": data.get("checksums", {}).get("sha256", ""),
+            "licenses": data.get("licenses", []),
+            "copyrights": data.get("copyrights", []),
+            "mime_type": "",
+            "purpose": "file",
+        })
+    print(f"  Files from agent output: {len(files)}")
+
+    # 1.4 Merge (commented out — data already combined above)
+    # print(f"\n  [1.4] Merging data sources:")
+    # packages, files = merge_data(findings, packages, files)
 
     # Count enrichment stats
     files_with_license = sum(1 for f in files if f.get("licenses"))
     files_with_copyright = sum(1 for f in files if f.get("copyrights"))
-    pkgs_with_license = sum(1 for p in packages if p.get("license"))
     print(f"  Files with license data: {files_with_license}")
     print(f"  Files with (C) data: {files_with_copyright}")
-    print(f"  Packages with license data: {pkgs_with_license}/{len(packages)}")
 
     # ── Phase 2: Build SPDX 3.0 Elements ──
     print(f"\n[Phase 2] Building SPDX 3.0 elements...\n")
@@ -1144,8 +1154,10 @@ def build(
     creation_info, agent_elements = build_creation_info(base_uri)
     print(f"  [2.1] CreationInfo: {len(agent_elements)} agent/tool elements")
 
-    # 2.2 Packages
-    pkg_elements, pkg_lic_elements = build_package_elements(packages, base_uri, lic_counter)
+    # 2.2 Packages (commented out — using only agent output)
+    # pkg_elements, pkg_lic_elements = build_package_elements(packages, base_uri, lic_counter)
+    pkg_elements = []
+    pkg_lic_elements = []
     print(f"  [2.2] Packages: {len(pkg_elements)} elements, {len(pkg_lic_elements)} license elements")
 
     # 2.3 Files
