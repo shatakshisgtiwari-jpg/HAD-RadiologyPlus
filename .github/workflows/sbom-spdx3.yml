@@ -13,49 +13,28 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── Step 1: FOSSology deep license & copyright scan ──
-      # SPDX_JSON format provides structured per-file findings with
-      # checksums, licenseConcluded, and copyrightText.
-      # Falls back to TEXT if SPDX_JSON is malformed (SpdxReport.py bug).
-      - name: FOSSology license & copyright scan
+      # ── Step 1: FOSSology copyright scan ──
+      # Uses SPDX_JSON format for structured per-file copyright findings.
+      # The JSON is treated as raw scanner output — copyright data is
+      # extracted and fed into the SPDX 3.0 builder directly.
+      - name: FOSSology copyright scan
         continue-on-error: true
         uses: fossology/fossology-action@v1
         with:
           scan_mode: 'repo'
-          scanners: 'nomos ojo copyright keyword'
+          scanners: 'copyright'
           report_format: 'SPDX_JSON'
 
       - name: Fix result permissions
         if: always()
         run: sudo chmod -R a+rw results/ 2>/dev/null || true
 
-      # ── Step 2: Generic dependency extraction via Syft ──
-      # Syft auto-detects all ecosystem lockfiles (npm, Maven, pip, Go,
-      # Cargo, Composer, NuGet, Gems, etc.) and outputs a unified JSON
-      # with PURLs, versions, and licenses.
-      # SYFT_ENRICH=all fetches license metadata from package registries
-      # (npm, Maven Central, PyPI, Go proxy) so no ecosystem-specific
-      # install steps are needed.
-      - name: Install Syft
-        if: always()
-        uses: anchore/sbom-action/download-syft@v0
-        id: syft
-
-      - name: Run Syft dependency scan
-        if: always()
-        env:
-          SYFT_ENRICH: all
-        run: |
-          mkdir -p results
-          syft dir:. -o syft-json=results/syft_deps.json 2>/dev/null || \
-            echo "[!] Syft scan failed (non-fatal, built-in parsers will be used)"
-
-      # ── Step 3: Build SPDX 3.0 directly (no conversion) ──
-      # spdx3_builder.py collects data from three sources:
-      #   1. FOSSology findings (per-file license + copyright)
-      #   2. Syft JSON (generic multi-ecosystem dependency + license data)
+      # ── Step 2: Build SPDX 3.0 directly ──
+      # spdx3_builder.py collects data from:
+      #   1. FOSSology findings (per-file copyright)
+      #   2. Built-in manifest parsers (npm, Maven)
       #   3. Filesystem walk (SHA-256, MIME type for every file)
-      # Then builds SPDX 3.0 elements directly — no SPDX 2.3 intermediate.
+      # Builds SPDX 3.0 elements directly.
       - name: Set up Python
         if: always()
         uses: actions/setup-python@v5
@@ -68,7 +47,6 @@ jobs:
           python scripts/spdx3_builder.py \
             --repo-root . \
             --fossology-report results/ \
-            --syft-json results/syft_deps.json \
             --output results/sbom_spdx3.jsonld
 
       - name: Generate SPDX 3.0 SBOM (with clearing decisions)
@@ -77,7 +55,6 @@ jobs:
           python scripts/spdx3_builder.py \
             --repo-root . \
             --fossology-report results/ \
-            --syft-json results/syft_deps.json \
             --output results/sbom_spdx3_cleared.jsonld \
             --clearing-policy clearing-policy.json
 

@@ -7,12 +7,12 @@
 SPDX 3.0 SBOM Direct Builder
 
 Generates SPDX 3.0 JSON-LD directly from raw data sources:
-  1. FOSSology scan findings (SPDX_JSON or TEXT)
-  2. Package manifest / lock file parsing (npm, Maven)
+  1. FOSSology copyright scan findings (TEXT)
+  2. Built-in package manifest parsers (npm, Maven)
   3. Filesystem walk with checksums and MIME types
 
-No intermediate SPDX 2.3 conversion — builds SPDX 3.0 elements from
-merged data. Works for any repository that integrates fossology-action.
+Builds SPDX 3.0 elements directly from merged data.
+Works for any repository that integrates fossology-action.
 
 Usage:
     python spdx3_builder.py --repo-root . --fossology-report results/ \\
@@ -34,7 +34,7 @@ from pathlib import Path
 
 
 # ═════════════════════════════════════════════════════════════════════
-# SPDX 3.0 JSON-LD Context (inline subset for self-contained docs)
+# SPDX 3.0 JSON-LD Context 
 # ═════════════════════════════════════════════════════════════════════
 
 _SPDX_NS = "https://spdx.org/rdf/3.0.0/terms"
@@ -175,25 +175,26 @@ MIME_TO_PURPOSE = {
 # Phase 1: Data Collection
 # ═════════════════════════════════════════════════════════════════════
 
-def extract_findings_from_spdx_json(report_path: str) -> dict[str, dict]:
-    """Extract per-file license/copyright findings from FOSSology SPDX 2.3 JSON.
+def extract_copyrights_from_json(report_path: str) -> dict[str, dict]:
+    """Extract per-file copyright findings from FOSSology JSON scanner output.
 
-    Treats the SPDX 2.3 file as structured scanner output — extracts findings
-    only, does NOT convert the document structure.
+    Reads the JSON produced by FOSSology (SPDX_JSON format) and extracts
+    only copyright data. The JSON structure is used purely as raw scanner
+    output — no SPDX 2.3 document conversion is performed.
 
     Returns: {
         "path/to/file": {
-            "licenses": ["MIT"],
+            "licenses": [],
             "copyrights": ["Copyright 2026 Author"],
-            "checksums": {"sha256": "abc...", "sha1": "def...", "md5": "ghi..."},
+            "checksums": {"sha256": "abc...", "md5": "def..."},
         }
     }
     """
     with open(report_path, "r", encoding="utf-8") as f:
         doc = json.load(f)
 
-    # Validate this is an SPDX document, not arbitrary JSON
-    if "spdxVersion" not in doc and "SPDXID" not in doc:
+    # Validate this looks like a FOSSology scanner output
+    if not isinstance(doc, dict):
         return {}
 
     findings = {}
@@ -208,29 +209,20 @@ def extract_findings_from_spdx_json(report_path: str) -> dict[str, dict]:
 
         entry = {"licenses": [], "copyrights": [], "checksums": {}}
 
-        # Extract concluded license
-        lic = file_entry.get("licenseConcluded", "NOASSERTION")
-        if lic and lic not in ("NOASSERTION", "NONE"):
-            entry["licenses"].append(lic)
-
-        # Extract license info in file (may have additional licenses)
-        for lic_in_file in file_entry.get("licenseInfoInFiles", []):
-            if lic_in_file not in ("NOASSERTION", "NONE") and lic_in_file not in entry["licenses"]:
-                entry["licenses"].append(lic_in_file)
-
-        # Extract copyright
+        # Extract copyright text
         cr = file_entry.get("copyrightText", "")
         if cr and cr not in ("NOASSERTION", "NONE"):
             entry["copyrights"].append(cr)
 
-        # Extract checksums
+        # Extract checksums (useful for file integrity in the SPDX 3.0 output)
         for cs in file_entry.get("checksums", []):
             algo = algo_map.get(cs.get("algorithm", ""), "")
             val = cs.get("checksumValue", "")
             if algo and val:
                 entry["checksums"][algo] = val
 
-        findings[path] = entry
+        if entry["copyrights"] or entry["checksums"]:
+            findings[path] = entry
 
     return findings
 
@@ -239,11 +231,16 @@ def extract_findings_from_text(report_path: str) -> dict[str, dict]:
     """Extract per-file findings from FOSSology TEXT report.
 
     Handles common TEXT output patterns:
-      - "filepath: license [scanner]"
       - "filepath: Copyright ..."
-      - Lines with scanner prefixes like "nomos:::" or "ojo:::"
+      - Lines with scanner prefixes like "copyright:::"
 
-    Returns: same structure as extract_findings_from_spdx_json.
+    Returns: {
+        "path/to/file": {
+            "licenses": [...],
+            "copyrights": ["Copyright 2026 Author"],
+            "checksums": {},
+        }
+    }
     """
     with open(report_path, "r", encoding="utf-8", errors="replace") as f:
         lines = f.readlines()
@@ -303,26 +300,26 @@ def extract_findings_from_text(report_path: str) -> dict[str, dict]:
 
 
 def collect_fossology_findings(report_dir: str) -> dict[str, dict]:
-    """Auto-detect FOSSology report format and extract findings.
+    """Extract per-file copyright findings from FOSSology scanner output.
 
-    Tries SPDX_JSON first (richer data), falls back to TEXT.
+    Tries JSON first (richer structured data with checksums), falls back to TEXT.
     """
     if not os.path.isdir(report_dir):
         print(f"  [!] Report directory not found: {report_dir}")
         return {}
 
-    # Look for SPDX JSON files
+    # Try JSON files first (FOSSology SPDX_JSON scanner output)
     json_files = sorted(Path(report_dir).glob("*.json"))
     for jf in json_files:
         try:
-            findings = extract_findings_from_spdx_json(str(jf))
+            findings = extract_copyrights_from_json(str(jf))
             if findings:
-                print(f"  Parsed SPDX JSON report: {jf.name} ({len(findings)} files)")
+                print(f"  Parsed JSON scanner output: {jf.name} ({len(findings)} files with copyright data)")
                 return findings
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             print(f"  [!] Failed to parse {jf.name}: {e}")
 
-    # Fallback: look for TEXT files
+    # Fallback: TEXT files
     txt_files = sorted(Path(report_dir).glob("*.txt"))
     for tf in txt_files:
         try:
@@ -470,119 +467,6 @@ def enrich_npm_licenses_from_node_modules(packages: list[dict], lock_dir: str) -
     return enriched
 
 
-def parse_syft_json(syft_path: str) -> list[dict]:
-    """Parse Syft JSON output for packages from any ecosystem.
-
-    Syft (https://github.com/anchore/syft) auto-detects lockfiles for npm,
-    Maven, pip, Go, Cargo, Composer, NuGet, Gems, etc. and outputs a unified
-    JSON with PURLs, versions, and licenses.
-
-    This function reads the Syft JSON and returns packages in the same format
-    as our ecosystem-specific parsers, making it a generic drop-in for any
-    ecosystem Syft supports.
-    """
-    with open(syft_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    artifacts = data.get("artifacts") or data.get("packages") or []
-    packages = []
-    seen = set()  # deduplicate by (name, version)
-
-    for art in artifacts:
-        name = art.get("name", "")
-        version = art.get("version", "")
-        if not name:
-            continue
-
-        key = (name, version)
-        if key in seen:
-            continue
-        seen.add(key)
-
-        # Extract PURL (Syft provides it directly)
-        purl = ""
-        art_id = art.get("id", "")
-        if art_id.startswith("pkg:"):
-            purl = art_id
-        # Also check purl field or externalRefs
-        if not purl:
-            purl = art.get("purl", "")
-        if not purl:
-            for ref in art.get("externalRefs", []):
-                if ref.get("referenceType") == "purl":
-                    purl = ref.get("referenceLocator", "")
-                    break
-
-        # Extract ecosystem from PURL or type
-        ecosystem = art.get("type", "unknown").lower()
-        if purl:
-            # pkg:npm/... → npm, pkg:maven/... → maven, pkg:pypi/... → pypi
-            purl_type = purl.split(":", 1)[-1].split("/", 1)[0] if ":" in purl else ""
-            if purl_type:
-                ecosystem = purl_type
-
-        # Extract license(s)
-        license_str = ""
-        licenses_raw = art.get("licenses") or []
-        lic_parts = []
-        for lic in licenses_raw:
-            if isinstance(lic, str):
-                lic_parts.append(lic)
-            elif isinstance(lic, dict):
-                # Syft uses {"value": "MIT", "spdxExpression": "MIT", ...}
-                expr = lic.get("spdxExpression", "") or lic.get("value", "") or lic.get("name", "")
-                if expr:
-                    lic_parts.append(expr)
-        if lic_parts:
-            license_str = " AND ".join(sorted(set(lic_parts)))
-
-        # Extract download location (top-level or metadata.resolved)
-        download_url = ""
-        for url_field in ("downloadLocation", "sourceInfo"):
-            if art.get(url_field):
-                download_url = art[url_field]
-                break
-        if not download_url:
-            metadata = art.get("metadata") or {}
-            if isinstance(metadata, dict) and metadata.get("resolved"):
-                download_url = metadata["resolved"]
-
-        # Extract integrity hash (top-level digests or metadata.integrity)
-        integrity = ""
-        for digest in art.get("digests", []):
-            if isinstance(digest, dict):
-                algo = digest.get("algorithm", "")
-                val = digest.get("value", "")
-                if algo and val:
-                    integrity = f"{algo}:{val}"
-                    break
-        if not integrity:
-            metadata = art.get("metadata") or {}
-            if isinstance(metadata, dict) and metadata.get("integrity"):
-                integrity = metadata["integrity"]
-
-        # Source manifest path
-        source_manifest = ""
-        for loc in art.get("locations", []):
-            if isinstance(loc, dict) and loc.get("path"):
-                source_manifest = loc["path"].lstrip("./")
-                break
-
-        packages.append({
-            "name": name,
-            "version": version,
-            "ecosystem": ecosystem,
-            "purl": purl,
-            "download_url": download_url,
-            "integrity": integrity,
-            "license": license_str,
-            "dependencies": [],
-            "source_manifest": source_manifest,
-        })
-
-    return packages
-
-
 def parse_pom_xml(pom_path: str) -> list[dict]:
     """Parse Maven pom.xml for declared dependencies.
 
@@ -630,54 +514,16 @@ def parse_pom_xml(pom_path: str) -> list[dict]:
     return packages
 
 
-def detect_and_parse_manifests(repo_root: str, syft_json_path: str | None = None) -> list[dict]:
+def detect_and_parse_manifests(repo_root: str) -> list[dict]:
     """Auto-detect package manifests in the repo and parse them.
 
-    If a Syft JSON file is provided (--syft-json), uses that as the primary
-    source for ALL ecosystems. Otherwise falls back to built-in parsers for
-    npm (package-lock.json) and Maven (pom.xml).
-
+    Uses built-in parsers for npm (package-lock.json) and Maven (pom.xml).
     Project-independent: detects whatever manifests exist.
     """
     all_packages = []
 
-    # ── Primary: Syft JSON (covers all ecosystems) ──
-    if syft_json_path and os.path.isfile(syft_json_path):
-        try:
-            pkgs = parse_syft_json(syft_json_path)
-            print(f"  Parsed Syft JSON: {len(pkgs)} packages across all ecosystems")
-            # Show per-ecosystem breakdown
-            eco_counts: dict[str, int] = {}
-            for p in pkgs:
-                eco = p.get("ecosystem", "unknown")
-                eco_counts[eco] = eco_counts.get(eco, 0) + 1
-            for eco, cnt in sorted(eco_counts.items()):
-                print(f"    {eco}: {cnt}")
-
-            # Fallback: enrich npm packages from node_modules/ if present
-            # (e.g. when Syft enrichment is unavailable or node_modules pre-exists)
-            npm_pkgs = [p for p in pkgs if p.get("ecosystem") == "npm" and not p.get("license")]
-            if npm_pkgs:
-                manifest_dirs: dict[str, list[dict]] = {}
-                for p in npm_pkgs:
-                    src = p.get("source_manifest", "")
-                    mdir = os.path.join(repo_root, os.path.dirname(src)) if src else repo_root
-                    manifest_dirs.setdefault(mdir, []).append(p)
-
-                total_enriched = 0
-                for mdir, mpkgs in manifest_dirs.items():
-                    total_enriched += enrich_npm_licenses_from_node_modules(mpkgs, mdir)
-                if total_enriched:
-                    print(f"    npm license enrichment: {total_enriched} from node_modules")
-
-            all_packages.extend(pkgs)
-        except Exception as e:
-            print(f"  [!] Failed to parse Syft JSON {syft_json_path}: {e}")
-            print(f"  [!] Falling back to built-in parsers")
-            syft_json_path = None  # fall through to built-in parsers
-
-    # ── Fallback: built-in parsers (npm + Maven) ──
-    if not syft_json_path:
+    # ── Built-in parsers (npm + Maven) ──
+    if True:
         for dirpath, dirnames, filenames in os.walk(repo_root):
             # Skip excluded directories
             rel_dir = os.path.relpath(dirpath, repo_root)
@@ -1305,7 +1151,6 @@ def build(
     report_dir: str | None,
     output_path: str,
     clearing_policy_path: str | None = None,
-    syft_json_path: str | None = None,
 ) -> None:
     """Main orchestrator: collect → build → clear → validate → write."""
 
@@ -1329,7 +1174,7 @@ def build(
 
     # 1.2 Package manifests
     print(f"\n  [1.2] Package manifest detection:")
-    packages = detect_and_parse_manifests(repo_root, syft_json_path=syft_json_path)
+    packages = detect_and_parse_manifests(repo_root)
     print(f"  Total packages detected: {len(packages)}")
 
     # 1.3 Filesystem walk
@@ -1509,9 +1354,6 @@ Examples:
   # With clearing decisions
   python spdx3_builder.py --repo-root . --fossology-report results/ --output results/sbom_spdx3_cleared.jsonld --clearing-policy clearing-policy.json
 
-  # With Syft for generic multi-ecosystem dependency detection
-  python spdx3_builder.py --repo-root . --fossology-report results/ --syft-json results/syft_deps.json --output results/sbom_spdx3.jsonld
-
   # Without FOSSology (lock files + filesystem only)
   python spdx3_builder.py --repo-root . --output results/sbom_spdx3.jsonld
         """,
@@ -1520,8 +1362,6 @@ Examples:
     parser.add_argument("--fossology-report", default=None, help="Path to directory containing FOSSology report files")
     parser.add_argument("--output", required=True, help="Output path for SPDX 3.0 JSON-LD file")
     parser.add_argument("--clearing-policy", default=None, help="Path to clearing-policy.json for clearing decisions")
-    parser.add_argument("--syft-json", default=None,
-                        help="Path to Syft JSON output for generic multi-ecosystem dependency extraction")
 
     args = parser.parse_args()
 
@@ -1534,7 +1374,6 @@ Examples:
         report_dir=args.fossology_report,
         output_path=args.output,
         clearing_policy_path=args.clearing_policy,
-        syft_json_path=args.syft_json,
     )
 
 
