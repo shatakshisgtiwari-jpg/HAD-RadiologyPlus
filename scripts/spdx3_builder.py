@@ -7,7 +7,7 @@
 SPDX 3.0 SBOM Direct Builder
 
 Generates SPDX 3.0 JSON-LD directly from raw data sources:
-  1. FOSSology copyright agent output (copyrights.txt)
+  1. FOSSology agent TEXT output
   2. Built-in package manifest parsers (npm, Maven)
   3. Filesystem walk with checksums and MIME types
 
@@ -176,14 +176,14 @@ MIME_TO_PURPOSE = {
 # ═════════════════════════════════════════════════════════════════════
 
 def extract_copyrights_from_text(report_path: str) -> dict[str, dict]:
-    """Extract per-file copyright findings from FOSSology copyright agent TEXT output.
+    """Extract per-file findings from FOSSology agent TEXT output.
 
-    Parses the copyrights.txt produced by the FOSSology copyright agent.
+    Parses the .txt produced by the FOSSology agent.
     Format:
-        Following copyrights found:
+        Following ... found:
         File: path/to/file
-        Copyright:               (or "Copyrights:")
-        \tcopyright text at line N
+        ...
+        \tfinding text at line N
         \tanother finding at line N
         File: next/file
         ...
@@ -191,7 +191,7 @@ def extract_copyrights_from_text(report_path: str) -> dict[str, dict]:
     Returns: {
         "path/to/file": {
             "licenses": [],
-            "copyrights": ["Copyright 2026 Author"],
+            "copyrights": ["(C) 2026 Author"],
             "checksums": {},
         }
     }
@@ -219,7 +219,7 @@ def extract_copyrights_from_text(report_path: str) -> dict[str, dict]:
                 findings[current_file] = {"licenses": [], "copyrights": [], "checksums": {}}
             continue
 
-        # Check for copyright finding (tab-indented line)
+        # Check for finding (tab-indented line)
         if current_file and raw.startswith("\t"):
             m = finding_re.match(raw)
             if m:
@@ -232,30 +232,30 @@ def extract_copyrights_from_text(report_path: str) -> dict[str, dict]:
                 findings[current_file]["copyrights"].append(finding)
             continue
 
-        # Skip header lines like "Copyrights:", "Copyright:", "Following copyrights found:"
+        # Skip header lines
 
     # Remove entries with no actual findings
     return {k: v for k, v in findings.items() if v["copyrights"]}
 
 
 def collect_fossology_findings(report_dir: str) -> dict[str, dict]:
-    """Extract per-file copyright findings from FOSSology copyright agent TEXT output."""
+    """Extract per-file findings from FOSSology agent TEXT output."""
     if not os.path.isdir(report_dir):
         print(f"  [!] Report directory not found: {report_dir}")
         return {}
 
-    # Look for copyright agent TEXT output (copyrights.txt)
+    # Look for agent TEXT output
     txt_files = sorted(Path(report_dir).glob("*.txt"))
     for tf in txt_files:
         try:
             findings = extract_copyrights_from_text(str(tf))
             if findings:
-                print(f"  Parsed copyright agent output: {tf.name} ({len(findings)} files)")
+                print(f"  Parsed agent output: {tf.name} ({len(findings)} files)")
                 return findings
         except Exception as e:
             print(f"  [!] Failed to parse {tf.name}: {e}")
 
-    print("  [!] No FOSSology copyright report found or parseable")
+    print("  [!] No FOSSology report found or parseable")
     return {}
 
 
@@ -600,7 +600,7 @@ def merge_data(
 ) -> tuple[list[dict], list[dict]]:
     """Merge FOSSology findings into file inventory and package data.
 
-    For each file: attach license and copyright from FOSSology findings.
+    For each file: attach license and (C) data from FOSSology findings.
     For each package: if FOSSology found a license in a manifest file
     belonging to this package, attach it.
     """
@@ -1130,7 +1130,7 @@ def build(
     files_with_copyright = sum(1 for f in files if f.get("copyrights"))
     pkgs_with_license = sum(1 for p in packages if p.get("license"))
     print(f"  Files with license data: {files_with_license}")
-    print(f"  Files with copyright data: {files_with_copyright}")
+    print(f"  Files with (C) data: {files_with_copyright}")
     print(f"  Packages with license data: {pkgs_with_license}/{len(packages)}")
 
     # ── Phase 2: Build SPDX 3.0 Elements ──

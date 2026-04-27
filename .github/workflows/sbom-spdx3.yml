@@ -13,11 +13,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── Step 1: FOSSology copyright scan ──
-      # TEXT format produces copyrights.txt directly from the copyright
-      # agent — no SPDX 2.3 intermediate. The builder parses this
-      # and produces SPDX 3.0 directly.
-      - name: FOSSology copyright scan
+      - name: FOSSology scan
         continue-on-error: true
         uses: fossology/fossology-action@v1
         with:
@@ -29,12 +25,6 @@ jobs:
         if: always()
         run: sudo chmod -R a+rw results/ 2>/dev/null || true
 
-      # ── Step 2: Build SPDX 3.0 directly ──
-      # spdx3_builder.py collects data from:
-      #   1. FOSSology findings (per-file copyright)
-      #   2. Built-in manifest parsers (npm, Maven)
-      #   3. Filesystem walk (SHA-256, MIME type for every file)
-      # Builds SPDX 3.0 elements directly.
       - name: Set up Python
         if: always()
         uses: actions/setup-python@v5
