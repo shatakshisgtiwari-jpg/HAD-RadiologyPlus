@@ -27,7 +27,7 @@ jobs:
       - name: Pull scanner image
         run: docker pull ghcr.io/${{ github.repository_owner }}/fossology-spdx3:latest
 
-      - name: Run SPDX 3.0 scan
+      - name: Build SPDX 3.0 report
         run: |
           docker run --rm \
             -v "${{ github.workspace }}:/opt/repo" \
