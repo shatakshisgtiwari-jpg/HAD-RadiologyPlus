@@ -146,16 +146,18 @@ def main(args: argparse.Namespace) -> int:
     output_dir = os.path.dirname(os.path.abspath(output_path))
     os.makedirs(output_dir, exist_ok=True)
 
+    # Write findings.json as a debug/audit artifact
     findings_path = os.path.join(output_dir, 'findings.json')
     with open(findings_path, 'w', encoding='utf-8') as f:
         json.dump(findings, f, indent=2, ensure_ascii=False)
     logging.info(f"Raw scan findings written to {findings_path}")
 
+    # Pass findings directly in memory (no disk round-trip)
     spdx3_builder.build(
         repo_root=dir_to_scan,
         report_dir=None,
         output_path=output_path,
-        findings_file=findings_path,
+        findings_override=findings,
     )
 
     logging.info(f"SPDX 3.0 JSON-LD written to {output_path}")
