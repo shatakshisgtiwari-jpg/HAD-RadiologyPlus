@@ -22,13 +22,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Pull scanner image
         run: docker pull ghcr.io/${{ github.repository_owner }}/fossology-spdx3:latest
 
@@ -42,10 +35,6 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/fossology-spdx3:latest \
             copyright repo \
             --output results/spdx3_report.jsonld
-
-      - name: Fix result permissions
-        if: always()
-        run: sudo chmod -R a+rw results/ 2>/dev/null || true
 
       - name: Upload SPDX 3.0 report
         if: always()

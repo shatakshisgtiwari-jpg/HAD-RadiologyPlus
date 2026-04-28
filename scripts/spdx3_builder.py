@@ -978,23 +978,37 @@ def build(
         findings = {}
         print("  [!] No report directory specified, skipping FOSSology data")
 
-    # 1.2 Package manifests
-    print(f"\n  [1.2] Package manifest detection:")
-    packages = detect_and_parse_manifests(repo_root)
-    print(f"  Total packages detected: {len(packages)}")
+    # 1.2 Package manifests (disabled — using only agent findings)
+    # print(f"\n  [1.2] Package manifest detection:")
+    # packages = detect_and_parse_manifests(repo_root)
+    # print(f"  Total packages detected: {len(packages)}")
+    packages = []
 
-    # 1.3 Filesystem walk
-    print(f"\n  [1.3] Filesystem walk:")
-    output_dir = os.path.relpath(os.path.dirname(os.path.abspath(output_path)), repo_root)
-    auto_excludes = []
-    if not output_dir.startswith(".."):
-        auto_excludes.append(output_dir.replace("\\", "/") + "/**")
-    files = walk_filesystem(repo_root, auto_excludes)
-    print(f"  Total files inventoried: {len(files)}")
+    # 1.3 Filesystem walk (disabled — using only agent findings)
+    # print(f"\n  [1.3] Filesystem walk:")
+    # output_dir = os.path.relpath(os.path.dirname(os.path.abspath(output_path)), repo_root)
+    # auto_excludes = []
+    # if not output_dir.startswith(".."):
+    #     auto_excludes.append(output_dir.replace("\\", "/") + "/**")
+    # files = walk_filesystem(repo_root, auto_excludes)
+    # print(f"  Total files inventoried: {len(files)}")
 
-    # 1.4 Merge FOSSology findings into file/package inventory
-    print(f"\n  [1.4] Merging data sources:")
-    packages, files = merge_data(findings, packages, files)
+    # Build file list directly from agent findings
+    files = []
+    for path, data in findings.items():
+        files.append({
+            "path": path,
+            "sha256": data.get("checksums", {}).get("sha256", ""),
+            "licenses": data.get("licenses", []),
+            "copyrights": data.get("copyrights", []),
+            "mime_type": "",
+            "purpose": "file",
+        })
+    print(f"  Files from agent findings: {len(files)}")
+
+    # 1.4 Merge (disabled — data already combined above)
+    # print(f"\n  [1.4] Merging data sources:")
+    # packages, files = merge_data(findings, packages, files)
 
     # Count enrichment stats
     files_with_license = sum(1 for f in files if f.get("licenses"))
@@ -1013,9 +1027,11 @@ def build(
     creation_info, agent_elements = build_creation_info(base_uri)
     print(f"  [2.1] CreationInfo: {len(agent_elements)} agent/tool elements")
 
-    # 2.2 Packages
-    pkg_elements, pkg_lic_elements = build_package_elements(packages, base_uri, lic_counter)
-    print(f"  [2.2] Packages: {len(pkg_elements)} elements, {len(pkg_lic_elements)} license elements")
+    # 2.2 Packages (disabled — using only agent findings)
+    # pkg_elements, pkg_lic_elements = build_package_elements(packages, base_uri, lic_counter)
+    pkg_elements = []
+    pkg_lic_elements = []
+    print(f"  [2.2] Packages: skipped (agent findings only)")
 
     # 2.3 Files
     file_elements, file_lic_elements = build_file_elements(files, base_uri, lic_counter)
