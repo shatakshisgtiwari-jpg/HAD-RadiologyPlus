@@ -945,6 +945,7 @@ def build(
     report_dir: str | None,
     output_path: str,
     findings_override: dict | None = None,
+    findings_file: str | None = None,
 ) -> None:
     """Main orchestrator: collect → build → validate → write.
 
@@ -955,6 +956,8 @@ def build(
         findings_override: If provided, use these findings directly instead
             of parsing report files. Dict mapping file paths to
             {"licenses": [...], "copyrights": [...], "checksums": {}}.
+        findings_file: Path to a JSON file containing findings dict. Used
+            when scan results are saved as an intermediate artifact.
     """
 
     repo_root = os.path.abspath(repo_root)
@@ -972,6 +975,10 @@ def build(
     if findings_override is not None:
         findings = findings_override
         print(f"  Using {len(findings)} file(s) from direct scanner input")
+    elif findings_file:
+        with open(findings_file, 'r', encoding='utf-8') as f:
+            findings = json.load(f)
+        print(f"  Loaded {len(findings)} file(s) from {findings_file}")
     elif report_dir:
         findings = collect_fossology_findings(report_dir)
     else:

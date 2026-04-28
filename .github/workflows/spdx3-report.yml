@@ -30,10 +30,8 @@ jobs:
           docker run --rm \
             -v "${{ github.workspace }}:/opt/repo" \
             -e GITHUB_REPOSITORY="${{ github.repository }}" \
-            -e GITHUB_REPOSITORY_OWNER="${{ github.repository_owner }}" \
-            -e GITHUB_ACTIONS=true \
             ghcr.io/${{ github.repository_owner }}/fossology-spdx3:latest \
-            copyright repo \
+            copyright \
             --output results/spdx3_report.jsonld
 
       - name: Upload SPDX 3.0 report
