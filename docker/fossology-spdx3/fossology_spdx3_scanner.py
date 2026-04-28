@@ -37,6 +37,9 @@ SCANNERS = {
     'keyword': '/bin/keyword',
 }
 
+# Directories to skip during scanning (relative to scan root)
+SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '.venv', 'venv'}
+
 
 # ─────────────────────────────────────────────────────────────
 # Run a C scanner binary
@@ -167,15 +170,26 @@ def _collect_licenses(raw, findings: dict, dir_to_scan: str) -> None:
 
 
 def _normalize_path(path: str, dir_to_scan: str) -> str:
-    """Strip the scan directory prefix from a file path."""
+    """Strip the scan directory prefix from a file path.
+
+    Returns empty string for paths inside SKIP_DIRS (e.g. .git/).
+    """
     if not path:
         return ''
     prefix = dir_to_scan if dir_to_scan.endswith('/') else dir_to_scan + '/'
     if path.startswith(prefix):
-        return path[len(prefix):]
-    if path.startswith('./'):
-        return path[2:]
-    return path
+        rel = path[len(prefix):]
+    elif path.startswith('./'):
+        rel = path[2:]
+    else:
+        rel = path
+
+    # Skip files inside excluded directories
+    top = rel.split('/')[0]
+    if top in SKIP_DIRS:
+        return ''
+
+    return rel
 
 
 # ─────────────────────────────────────────────────────────────
