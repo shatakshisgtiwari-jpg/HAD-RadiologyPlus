@@ -93,7 +93,7 @@ def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
             if path not in findings:
                 findings[path] = {"licenses": [], "copyrights": [], "checksums": {}}
 
-            for finding in entry.get('results', []):
+            for finding in (entry.get('results') or []):
                 if finding is None:
                     continue
                 # Only include "statement" type (actual copyright text)
@@ -126,7 +126,7 @@ def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
                 continue
             if path not in findings:
                 findings[path] = {"licenses": [], "copyrights": [], "checksums": {}}
-            for finding in entry.get('results', []):
+            for finding in (entry.get('results') or []):
                 if finding and finding.get('content'):
                     text = f"[keyword] {finding['content'].strip()}"
                     if text not in findings[path]["copyrights"]:
@@ -158,7 +158,7 @@ def _collect_licenses(raw, findings: dict, dir_to_scan: str) -> None:
         if path not in findings:
             findings[path] = {"licenses": [], "copyrights": [], "checksums": {}}
 
-        for finding in entry.get('licenses', []):
+        for finding in (entry.get('licenses') or []):
             if finding is None:
                 continue
             lic = finding.get('license', '').strip()
