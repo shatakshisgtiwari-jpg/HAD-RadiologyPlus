@@ -113,7 +113,7 @@ def collect_findings(scanner: Scanners, cli_options: CliOptions) -> dict:
         logging.info("Scanning for licenses...")
         scanner.set_scanner_results(whole=True)
         # Without an allowlist loaded, all detected licenses are returned
-        # as "not allowed" — which is what we want for SBOM (capture everything).
+        # as "not allowed" — which is what we want (capture everything).
         license_results = scanner.results_are_allow_listed()
         if isinstance(license_results, list):
             for scan_result in license_results:
@@ -157,7 +157,7 @@ def main(args: argparse.Namespace) -> int:
     cli_options = CliOptions()
     cli_options.update_args(args)
 
-    # Do NOT load an allowlist — we want ALL detected licenses in the SBOM,
+    # Do NOT load an allowlist — we want ALL detected licenses in the report,
     # not just "violations". Without an allowlist, results_are_allow_listed()
     # returns every detected license.
 
@@ -232,8 +232,8 @@ if __name__ == "__main__":
 
     # Our SPDX 3.0-specific arguments
     parser.add_argument(
-        "--output", type=str, default="results/sbom_spdx3.jsonld",
-        help="Output path for SPDX 3.0 JSON-LD (default: results/sbom_spdx3.jsonld)",
+        "--output", type=str, default="results/spdx3_report.jsonld",
+        help="Output path for SPDX 3.0 JSON-LD (default: results/spdx3_report.jsonld)",
     )
 
     parsed = parser.parse_args()

@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: MIT
 
 """
-SPDX 3.0 SBOM Direct Builder
+SPDX 3.0 Report Builder
 
 Generates SPDX 3.0 JSON-LD directly from raw data sources:
   1. FOSSology scanner findings (in-memory or TEXT report)
@@ -15,7 +15,7 @@ Builds SPDX 3.0 elements directly from merged data.
 
 Usage:
     python spdx3_builder.py --repo-root . --fossology-report results/ \\
-        --output results/sbom_spdx3.jsonld
+        --output results/spdx3_report.jsonld
 """
 
 import argparse
@@ -1114,15 +1114,15 @@ def build(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="SPDX 3.0 SBOM Direct Builder — generates SPDX 3.0 JSON-LD from raw data sources.",
+        description="SPDX 3.0 Report Builder — generates SPDX 3.0 JSON-LD from raw data sources.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Basic: build from repo + FOSSology report
-  python spdx3_builder.py --repo-root . --fossology-report results/ --output results/sbom_spdx3.jsonld
+  python spdx3_builder.py --repo-root . --fossology-report results/ --output results/spdx3_report.jsonld
 
   # Without FOSSology (lock files + filesystem only)
-  python spdx3_builder.py --repo-root . --output results/sbom_spdx3.jsonld
+  python spdx3_builder.py --repo-root . --output results/spdx3_report.jsonld
         """,
     )
     parser.add_argument("--repo-root", required=True, help="Path to repository root directory")
