@@ -11,7 +11,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update \
     ca-certificates git lsb-release sudo cmake ninja-build \
     gcc g++ libxslt1-dev dpkg-dev \
     libmagic-dev libjson-c-dev libglib2.0-dev \
-    libboost-regex-dev libicu-dev libssl-dev \
+    libboost-regex-dev libboost-system-dev libicu-dev libssl-dev \
     libpq-dev \
  && rm -rf /var/lib/apt/lists/*
 
