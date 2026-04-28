@@ -8,7 +8,7 @@ WORKDIR /fossology
 
 RUN DEBIAN_FRONTEND=noninteractive apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    git lsb-release sudo cmake ninja-build \
+    ca-certificates git lsb-release sudo cmake ninja-build \
     gcc g++ libxslt1-dev dpkg-dev \
     libmagic-dev libjson-c-dev libglib2.0-dev \
     libboost-regex-dev libicu-dev libssl-dev \
