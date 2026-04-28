@@ -11,8 +11,10 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update \
     ca-certificates git lsb-release sudo cmake ninja-build \
     gcc g++ libxslt1-dev dpkg-dev \
     libmagic-dev libjson-c-dev libglib2.0-dev \
-    libboost-regex-dev libboost-system-dev libicu-dev libssl-dev \
-    libpq-dev \
+    libboost-regex-dev libboost-system-dev \
+    libboost-filesystem-dev libboost-program-options-dev \
+    libicu-dev libssl-dev libpq-dev \
+    librpm-dev libxml2-dev \
  && rm -rf /var/lib/apt/lists/*
 
 ARG FOSSOLOGY_REPO=https://github.com/shatakshisgtiwari-jpg/fossology.git
