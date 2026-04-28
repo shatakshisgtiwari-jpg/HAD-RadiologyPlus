@@ -1,8 +1,10 @@
 name: SPDX 3.0 Report Generation
 
 on:
-  push:
-    branches: [main]
+  # Always runs after the build workflow (which runs on every push to main)
+  workflow_run:
+    workflows: ["Build & Push Scanner Image"]
+    types: [completed]
   workflow_dispatch:
 
 env:
@@ -12,6 +14,8 @@ jobs:
   spdx3_generation:
     runs-on: ubuntu-latest
     name: Generate SPDX 3.0 Report
+    # Skip if triggered by a failed build workflow
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     permissions:
       contents: read
       packages: read
