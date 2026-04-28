@@ -193,7 +193,7 @@ def extract_copyrights_from_text(report_path: str) -> dict[str, dict]:
         m = file_header_re.match(raw)
         if m:
             current_file = m.group(1).strip()
-            current_file = re.sub(r"^(\./|/opt/repo/)", "", current_file)
+            current_file = re.sub(r"^\./", "", current_file)
             if current_file not in findings:
                 findings[current_file] = {"licenses": [], "copyrights": [], "checksums": {}}
             continue

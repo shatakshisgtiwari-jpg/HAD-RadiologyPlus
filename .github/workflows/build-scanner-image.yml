@@ -1,12 +1,15 @@
-name: Build & Push FOSSology SPDX 3.0 Scanner Image
+name: Build & Push Scanner Image
 
 on:
   push:
     branches: [main]
     paths:
-      - 'scripts/spdx3_builder.py'
       - 'docker/fossology-spdx3/**'
   workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: fossology-spdx3
 
 jobs:
   build-and-push:
@@ -19,27 +22,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Log in to GitHub Container Registry
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set image metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/fossology-spdx3
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=
 
       - name: Build and push image
         uses: docker/build-push-action@v5
         with:
-          context: .
-          file: docker/fossology-spdx3/Dockerfile
+          context: docker/fossology-spdx3
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest

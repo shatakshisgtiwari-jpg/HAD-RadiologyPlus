@@ -204,8 +204,8 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--scan-dir", type=str, default="/opt/repo",
-        help="Directory to scan (default: /opt/repo)",
+        "--scan-dir", type=str, default=".",
+        help="Directory to scan (default: current directory)",
     )
 
     parser.add_argument(

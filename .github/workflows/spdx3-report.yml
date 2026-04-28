@@ -3,19 +3,15 @@ name: SPDX 3.0 Report Generation
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - 'scripts/spdx3_builder.py'
-      - 'docker/fossology-spdx3/**'
-  workflow_run:
-    workflows: ["Build & Push FOSSology SPDX 3.0 Scanner Image"]
-    types: [completed]
   workflow_dispatch:
+
+env:
+  SCANNER_IMAGE: ghcr.io/${{ github.repository_owner }}/fossology-spdx3:latest
 
 jobs:
   spdx3_generation:
     runs-on: ubuntu-latest
     name: Generate SPDX 3.0 Report
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     permissions:
       contents: read
       packages: read
@@ -24,17 +20,30 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Pull scanner image
-        run: docker pull ghcr.io/${{ github.repository_owner }}/fossology-spdx3:latest
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build SPDX 3.0 report
+      - name: Pull scanner image
+        run: docker pull ${{ env.SCANNER_IMAGE }}
+
+      - name: Run SPDX 3.0 scan
         run: |
           docker run --rm \
             -v "${{ github.workspace }}:/opt/repo" \
             -e GITHUB_REPOSITORY="${{ github.repository }}" \
-            ghcr.io/${{ github.repository_owner }}/fossology-spdx3:latest \
+            -e GITHUB_REPOSITORY_OWNER="${{ github.repository_owner }}" \
+            ${{ env.SCANNER_IMAGE }} \
             copyright \
-            --output results/spdx3_report.jsonld
+            --scan-dir /opt/repo \
+            --output /opt/repo/results/spdx3_report.jsonld
+
+      - name: Fix result permissions
+        if: always()
+        run: sudo chmod -R a+rw results/ 2>/dev/null || true
 
       - name: Upload SPDX 3.0 report
         if: always()
