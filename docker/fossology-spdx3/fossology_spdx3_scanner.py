@@ -73,9 +73,9 @@ def run_scanner(scanner_path: str, dir_to_scan: str,
 def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
     """Run selected scanners and collect per-file findings from their JSON output.
 
-    The C binaries with -J output JSON like:
-      {"results": [{"file": "path", "results": [{"content": "...", "type": "statement"}]}]}
-      {"results": [{"file": "path", "licenses": [{"license": "MIT"}]}]}
+    The C binaries with -J output JSON in one of two formats:
+      [{"file": "path", "results": [...]}]           (list directly)
+      {"results": [{"file": "path", "results": [...]}]}  (dict with results key)
 
     Returns:
         {filepath: {"licenses": [...], "copyrights": [...], "checksums": {}}}
@@ -86,7 +86,7 @@ def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
     if 'copyright' in scanners:
         logging.info("Scanning for copyrights...")
         raw = run_scanner(SCANNERS['copyright'], dir_to_scan)
-        for entry in raw.get('results', []):
+        for entry in _get_results_list(raw):
             path = _normalize_path(entry.get('file', ''), dir_to_scan)
             if not path:
                 continue
@@ -120,7 +120,7 @@ def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
         logging.info("Scanning for keywords...")
         raw = run_scanner(SCANNERS['keyword'], dir_to_scan)
         # Keywords are informational; store as copyrights for now
-        for entry in raw.get('results', []):
+        for entry in _get_results_list(raw):
             path = _normalize_path(entry.get('file', ''), dir_to_scan)
             if not path:
                 continue
@@ -135,9 +135,23 @@ def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
     return findings
 
 
-def _collect_licenses(raw: dict, findings: dict, dir_to_scan: str) -> None:
+def _get_results_list(raw) -> list:
+    """Extract the results list from scanner JSON output.
+
+    The C binaries may return either:
+      - A list directly: [{"file": ..., "results": ...}, ...]
+      - A dict with a 'results' key: {"results": [{"file": ..., ...}]}
+    """
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, dict):
+        return raw.get('results', [])
+    return []
+
+
+def _collect_licenses(raw, findings: dict, dir_to_scan: str) -> None:
     """Extract license findings from nomos/ojo JSON output into findings dict."""
-    for entry in raw.get('results', []):
+    for entry in _get_results_list(raw):
         path = _normalize_path(entry.get('file', ''), dir_to_scan)
         if not path:
             continue
