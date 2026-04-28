@@ -175,26 +175,6 @@ MIME_TO_PURPOSE = {
 # ═════════════════════════════════════════════════════════════════════
 
 def extract_copyrights_from_text(report_path: str) -> dict[str, dict]:
-    """Extract per-file findings from FOSSology agent TEXT output.
-
-    Parses the .txt produced by the FOSSology agent.
-    Format:
-        Following ... found:
-        File: path/to/file
-        ...
-        \tfinding text at line N
-        \tanother finding at line N
-        File: next/file
-        ...
-
-    Returns: {
-        "path/to/file": {
-            "licenses": [],
-            "copyrights": ["(C) 2026 Author"],
-            "checksums": {},
-        }
-    }
-    """
     with open(report_path, "r", encoding="utf-8", errors="replace") as f:
         lines = f.readlines()
 
@@ -947,18 +927,6 @@ def build(
     findings_override: dict | None = None,
     findings_file: str | None = None,
 ) -> None:
-    """Main orchestrator: collect → build → validate → write.
-
-    Args:
-        repo_root: Path to repository root directory.
-        report_dir: Path to directory containing FOSSology report files.
-        output_path: Output path for SPDX 3.0 JSON-LD file.
-        findings_override: If provided, use these findings directly instead
-            of parsing report files. Dict mapping file paths to
-            {"licenses": [...], "copyrights": [...], "checksums": {}}.
-        findings_file: Path to a JSON file containing findings dict. Used
-            when scan results are saved as an intermediate artifact.
-    """
 
     repo_root = os.path.abspath(repo_root)
     doc_name = os.environ.get("GITHUB_REPOSITORY", os.path.basename(repo_root))
@@ -1019,9 +987,9 @@ def build(
 
     # Count enrichment stats
     files_with_license = sum(1 for f in files if f.get("licenses"))
-    files_with_copyright = sum(1 for f in files if f.get("copyrights"))
+    files_with_cr = sum(1 for f in files if f.get("copyrights"))
     print(f"  Files with license data: {files_with_license}")
-    print(f"  Files with (C) data: {files_with_copyright}")
+    print(f"  Files with (C) data: {files_with_cr}")
 
     # ── Phase 2: Build SPDX 3.0 Elements ──
     print(f"\n[Phase 2] Building SPDX 3.0 elements...\n")

@@ -3,17 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Contributors
 # SPDX-License-Identifier: MIT
 
-"""
-FOSSology SPDX 3.0 Scanner — no FoScanner dependency.
-
-Calls the C scanner binaries directly via subprocess, collects their
-JSON output (-J flag), saves raw findings to findings.json, then feeds
-them to spdx3_builder to produce SPDX 3.0 JSON-LD.
-
-    C binaries (subprocess -J) → JSON stdout → findings.json → SPDX 3.0
-
-No FoScanner library. No SPDX 2.x at any stage.
-"""
+"""FOSSology SPDX 3.0 Scanner."""
 
 import argparse
 import json
@@ -29,7 +19,6 @@ import spdx3_builder
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
-# Scanner binary paths (from the base fossology/fossology:scanner image)
 SCANNERS = {
     'copyright': '/bin/copyright',
     'nomos': '/bin/nomossa',
@@ -37,7 +26,6 @@ SCANNERS = {
     'keyword': '/bin/keyword',
 }
 
-# Directories to skip during scanning (relative to scan root)
 SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '.venv', 'venv'}
 
 
@@ -47,10 +35,6 @@ SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '.venv', 'venv'}
 
 def run_scanner(scanner_path: str, dir_to_scan: str,
                 extra_args: list[str] | None = None) -> dict:
-    """Run a FOSSology C scanner binary with -J (JSON output) and -d (directory).
-
-    Returns the parsed JSON dict from the scanner's stdout.
-    """
     command = [scanner_path, "-J", "-d", dir_to_scan]
     if extra_args:
         command.extend(extra_args)
@@ -74,20 +58,9 @@ def run_scanner(scanner_path: str, dir_to_scan: str,
 # ─────────────────────────────────────────────────────────────
 
 def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
-    """Run selected scanners and collect per-file findings from their JSON output.
-
-    The C binaries with -J output JSON in one of two formats:
-      [{"file": "path", "results": [...]}]           (list directly)
-      {"results": [{"file": "path", "results": [...]}]}  (dict with results key)
-
-    Returns:
-        {filepath: {"licenses": [...], "copyrights": [...], "checksums": {}}}
-    """
     findings: dict[str, dict] = {}
 
-    # ── Copyright scanner ──
     if 'copyright' in scanners:
-        logging.info("Scanning for copyrights...")
         raw = run_scanner(SCANNERS['copyright'], dir_to_scan)
         for entry in _get_results_list(raw):
             path = _normalize_path(entry.get('file', ''), dir_to_scan)
@@ -99,30 +72,25 @@ def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
             for finding in (entry.get('results') or []):
                 if finding is None:
                     continue
-                # Only include "statement" type (actual copyright text)
                 if finding.get('type') == 'statement' and finding.get('content'):
                     text = finding['content'].strip()
                     if text and text not in findings[path]["copyrights"]:
                         findings[path]["copyrights"].append(text)
 
-    # ── Nomos license scanner ──
     if 'nomos' in scanners:
         logging.info("Scanning for licenses (nomos)...")
         extra = ["-S", "-l", "-n", str(max(1, multiprocessing.cpu_count() - 1))]
         raw = run_scanner(SCANNERS['nomos'], dir_to_scan, extra)
         _collect_licenses(raw, findings, dir_to_scan)
 
-    # ── OJO license scanner ──
     if 'ojo' in scanners:
         logging.info("Scanning for licenses (ojo)...")
         raw = run_scanner(SCANNERS['ojo'], dir_to_scan)
         _collect_licenses(raw, findings, dir_to_scan)
 
-    # ── Keyword scanner ──
     if 'keyword' in scanners:
         logging.info("Scanning for keywords...")
         raw = run_scanner(SCANNERS['keyword'], dir_to_scan)
-        # Keywords are informational; store as copyrights for now
         for entry in _get_results_list(raw):
             path = _normalize_path(entry.get('file', ''), dir_to_scan)
             if not path:
@@ -139,12 +107,6 @@ def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
 
 
 def _get_results_list(raw) -> list:
-    """Extract the results list from scanner JSON output.
-
-    The C binaries may return either:
-      - A list directly: [{"file": ..., "results": ...}, ...]
-      - A dict with a 'results' key: {"results": [{"file": ..., ...}]}
-    """
     if isinstance(raw, list):
         return raw
     if isinstance(raw, dict):
@@ -153,7 +115,6 @@ def _get_results_list(raw) -> list:
 
 
 def _collect_licenses(raw, findings: dict, dir_to_scan: str) -> None:
-    """Extract license findings from nomos/ojo JSON output into findings dict."""
     for entry in _get_results_list(raw):
         path = _normalize_path(entry.get('file', ''), dir_to_scan)
         if not path:
@@ -170,10 +131,6 @@ def _collect_licenses(raw, findings: dict, dir_to_scan: str) -> None:
 
 
 def _normalize_path(path: str, dir_to_scan: str) -> str:
-    """Strip the scan directory prefix from a file path.
-
-    Returns empty string for paths inside SKIP_DIRS (e.g. .git/).
-    """
     if not path:
         return ''
     prefix = dir_to_scan if dir_to_scan.endswith('/') else dir_to_scan + '/'
@@ -184,7 +141,6 @@ def _normalize_path(path: str, dir_to_scan: str) -> str:
     else:
         rel = path
 
-    # Skip files inside excluded directories
     top = rel.split('/')[0]
     if top in SKIP_DIRS:
         return ''
@@ -199,7 +155,6 @@ def _normalize_path(path: str, dir_to_scan: str) -> str:
 def main(args: argparse.Namespace) -> int:
     dir_to_scan = args.scan_dir
 
-    # Determine which scanners to run
     scanners_to_run = []
     for s in (args.scanners or ['copyright']):
         s = s.strip().lower()
@@ -212,17 +167,12 @@ def main(args: argparse.Namespace) -> int:
     logging.info(f"Scanners: {', '.join(scanners_to_run)}")
     logging.info(f"Directory: {dir_to_scan}")
 
-    # ── Collect findings directly from C binaries ──
     findings = collect_findings(scanners_to_run, dir_to_scan)
 
-    copyright_count = sum(len(f["copyrights"]) for f in findings.values())
-    license_count = sum(len(f["licenses"]) for f in findings.values())
-    logging.info(
-        f"Collected {copyright_count} copyright(s) and {license_count} license(s) "
-        f"across {len(findings)} file(s)"
-    )
+    cr_count = sum(len(f["copyrights"]) for f in findings.values())
+    lic_count = sum(len(f["licenses"]) for f in findings.values())
+    logging.info(f"Collected {cr_count} (C) and {lic_count} license(s) across {len(findings)} file(s)")
 
-    # ── Write findings to JSON (intermediate artifact for debugging) ──
     output_path = args.output
     output_dir = os.path.dirname(os.path.abspath(output_path))
     os.makedirs(output_dir, exist_ok=True)
@@ -232,7 +182,6 @@ def main(args: argparse.Namespace) -> int:
         json.dump(findings, f, indent=2, ensure_ascii=False)
     logging.info(f"Raw scan findings written to {findings_path}")
 
-    # ── Build SPDX 3.0 JSON-LD from the saved findings file ──
     spdx3_builder.build(
         repo_root=dir_to_scan,
         report_dir=None,
@@ -246,12 +195,12 @@ def main(args: argparse.Namespace) -> int:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="FOSSology SPDX 3.0 Scanner — calls C binaries directly, no FoScanner.",
+        description="SPDX 3.0 Scanner",
     )
 
     parser.add_argument(
         "scanners", type=str, nargs='*', default=['copyright'],
-        help="Scanners to run: copyright, nomos, ojo, keyword (default: copyright)",
+        help="Scanners to run (default: copyright)",
     )
 
     parser.add_argument(
