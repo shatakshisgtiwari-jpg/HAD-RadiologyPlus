@@ -7,16 +7,15 @@
 SPDX 3.0 SBOM Direct Builder
 
 Generates SPDX 3.0 JSON-LD directly from raw data sources:
-  1. FOSSology agent TEXT output
+  1. FOSSology scanner findings (in-memory or TEXT report)
   2. Built-in package manifest parsers (npm, Maven)
   3. Filesystem walk with checksums and MIME types
 
 Builds SPDX 3.0 elements directly from merged data.
-Works for any repository that integrates fossology-action.
 
 Usage:
     python spdx3_builder.py --repo-root . --fossology-report results/ \\
-        --output results/sbom_spdx3.jsonld [--clearing-policy clearing-policy.json]
+        --output results/sbom_spdx3.jsonld
 """
 
 import argparse
@@ -906,138 +905,8 @@ def build_structural_relationships(
 
 
 # ═════════════════════════════════════════════════════════════════════
-# Phase 3: Clearing Decisions & Validation
+# Phase 3: Validation
 # ═════════════════════════════════════════════════════════════════════
-
-def apply_clearing(
-    graph: list[dict], policy: dict, base_uri: str,
-) -> tuple[list[dict], dict]:
-    """Apply clearing decisions based on policy file.
-
-    For each Package/File element:
-      - EXCLUDED if file matches exclusion pattern
-      - CLEARED if license is in approved list (or no license detected)
-      - FLAGGED if license is NOT in approved list
-    """
-    approved = [lic.lower() for lic in policy.get("licenses", [])]
-    excludes = policy.get("exclude", [])
-
-    # Build license map: element_id → license strings
-    lic_expr_map = {}
-    for elem in graph:
-        if elem.get("@type") == "simplelicensing_LicenseExpression":
-            lic_expr_map[elem["@id"]] = elem.get("simplelicensing_licenseExpression", "")
-
-    elem_licenses: dict[str, list[str]] = {}
-    for elem in graph:
-        if elem.get("@type") == "Relationship" and elem.get("relationshipType") in (
-            "hasConcludedLicense", "hasDeclaredLicense",
-        ):
-            from_id = elem["from"]
-            for to_id in elem.get("to", []):
-                expr = lic_expr_map.get(to_id, "")
-                if expr:
-                    elem_licenses.setdefault(from_id, []).append(expr)
-
-    annotations = []
-    ann_idx = 0
-    summary = {"cleared": [], "excluded": [], "flagged": [], "total_elements": 0}
-
-    for elem in graph:
-        etype = elem.get("@type", "")
-        if etype not in ("software_Package", "software_File"):
-            continue
-
-        summary["total_elements"] += 1
-        elem_id = elem["@id"]
-        elem_name = elem.get("name", "")
-
-        # Check exclusion
-        if etype == "software_File" and _match_any_pattern(elem_name, excludes):
-            decision, reason = "EXCLUDED", "File matches exclusion pattern in allowlist"
-            summary["excluded"].append({"id": elem_id, "name": elem_name})
-        else:
-            licenses = elem_licenses.get(elem_id, [])
-            if not licenses:
-                decision, reason = "CLEARED", "No license detected"
-                summary["cleared"].append({"id": elem_id, "name": elem_name, "license": "none"})
-            else:
-                all_ok = True
-                for lic in licenses:
-                    tokens = lic.replace("(", "").replace(")", "").split()
-                    for token in tokens:
-                        t = token.lower()
-                        if t in ("and", "or", "with"):
-                            continue
-                        if not any(t == a or t.startswith(a) for a in approved):
-                            all_ok = False
-                            break
-
-                if all_ok:
-                    decision = "CLEARED"
-                    reason = f"License(s) {', '.join(licenses)} approved by policy"
-                    summary["cleared"].append({"id": elem_id, "name": elem_name, "license": ", ".join(licenses)})
-                else:
-                    decision = "FLAGGED"
-                    reason = f"License(s) {', '.join(licenses)} not fully covered by approved list {policy.get('licenses', [])}"
-                    summary["flagged"].append({"id": elem_id, "name": elem_name, "license": ", ".join(licenses)})
-
-        annotations.append({
-            "@type": "Annotation",
-            "@id": f"{base_uri}/Annotation/clearing-{ann_idx}",
-            "creationInfo": "_:creationinfo",
-            "annotationType": "review",
-            "subject": elem_id,
-            "statement": f"Clearing decision: {decision}. {reason}",
-        })
-        ann_idx += 1
-
-    return annotations, summary
-
-
-def write_clearing_report(summary: dict, output_path: str) -> None:
-    """Write human-readable clearing report."""
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write("SPDX 3.0 License Clearing Report\n")
-        f.write("=" * 50 + "\n\n")
-        f.write(f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}\n")
-        f.write(f"Total elements reviewed: {summary['total_elements']}\n")
-        f.write(f"  CLEARED:  {len(summary['cleared'])}\n")
-        f.write(f"  EXCLUDED: {len(summary['excluded'])}\n")
-        f.write(f"  FLAGGED:  {len(summary['flagged'])}\n\n")
-
-        if summary["flagged"]:
-            f.write("-" * 50 + "\n")
-            f.write("FLAGGED — Requires Human Review\n")
-            f.write("-" * 50 + "\n")
-            for item in summary["flagged"]:
-                f.write(f"  {item['name']}\n")
-                f.write(f"    License: {item['license']}\n")
-                f.write(f"    ID: {item['id']}\n\n")
-
-        if summary["cleared"]:
-            f.write("-" * 50 + "\n")
-            f.write("CLEARED — Approved by Policy\n")
-            f.write("-" * 50 + "\n")
-            for item in summary["cleared"]:
-                f.write(f"  {item['name']}\n")
-                f.write(f"    License: {item['license']}\n\n")
-
-        if summary["excluded"]:
-            f.write("-" * 50 + "\n")
-            f.write("EXCLUDED — Matched Exclusion Pattern\n")
-            f.write("-" * 50 + "\n")
-            for item in summary["excluded"]:
-                f.write(f"  {item['name']}\n")
-                f.write(f"    ID: {item['id']}\n\n")
-
-        if summary["flagged"]:
-            f.write("\n" + "=" * 50 + "\n")
-            f.write(f"VERDICT: REVIEW NEEDED — {len(summary['flagged'])} item(s) require attention\n")
-        else:
-            f.write("\n" + "=" * 50 + "\n")
-            f.write("VERDICT: ALL CLEAR — All elements pass policy\n")
-
 
 def validate_element(element: dict, errors: list[str]) -> None:
     """Validate a single SPDX 3.0 element."""
@@ -1075,9 +944,18 @@ def build(
     repo_root: str,
     report_dir: str | None,
     output_path: str,
-    clearing_policy_path: str | None = None,
+    findings_override: dict | None = None,
 ) -> None:
-    """Main orchestrator: collect → build → clear → validate → write."""
+    """Main orchestrator: collect → build → validate → write.
+
+    Args:
+        repo_root: Path to repository root directory.
+        report_dir: Path to directory containing FOSSology report files.
+        output_path: Output path for SPDX 3.0 JSON-LD file.
+        findings_override: If provided, use these findings directly instead
+            of parsing report files. Dict mapping file paths to
+            {"licenses": [...], "copyrights": [...], "checksums": {}}.
+    """
 
     repo_root = os.path.abspath(repo_root)
     doc_name = os.environ.get("GITHUB_REPOSITORY", os.path.basename(repo_root))
@@ -1091,51 +969,32 @@ def build(
 
     # 1.1 FOSSology findings
     print("  [1.1] FOSSology scan findings:")
-    findings = {}
-    if report_dir:
+    if findings_override is not None:
+        findings = findings_override
+        print(f"  Using {len(findings)} file(s) from direct scanner input")
+    elif report_dir:
         findings = collect_fossology_findings(report_dir)
     else:
+        findings = {}
         print("  [!] No report directory specified, skipping FOSSology data")
 
-    # 1.2 Package manifests (commented out — using only agent output)
-    # print(f"\n  [1.2] Package manifest detection:")
-    # packages = detect_and_parse_manifests(repo_root)
-    # print(f"  Total packages detected: {len(packages)}")
-    packages = []
+    # 1.2 Package manifests
+    print(f"\n  [1.2] Package manifest detection:")
+    packages = detect_and_parse_manifests(repo_root)
+    print(f"  Total packages detected: {len(packages)}")
 
-    # 1.3 Filesystem walk (commented out — using only agent output)
-    # Load clearing policy (if available) — used in Phase 3 for annotations,
-    # but NOT for excluding files from the walk. All files must appear in the
-    # SBOM so they can receive CLEARED/EXCLUDED/FLAGGED annotations.
-    clearing_policy = None
-    if clearing_policy_path and os.path.isfile(clearing_policy_path):
-        with open(clearing_policy_path, "r", encoding="utf-8") as f:
-            clearing_policy = json.load(f)
+    # 1.3 Filesystem walk
+    print(f"\n  [1.3] Filesystem walk:")
+    output_dir = os.path.relpath(os.path.dirname(os.path.abspath(output_path)), repo_root)
+    auto_excludes = []
+    if not output_dir.startswith(".."):
+        auto_excludes.append(output_dir.replace("\\", "/") + "/**")
+    files = walk_filesystem(repo_root, auto_excludes)
+    print(f"  Total files inventoried: {len(files)}")
 
-    # print(f"\n  [1.3] Filesystem walk:")
-    # output_dir = os.path.relpath(os.path.dirname(os.path.abspath(output_path)), repo_root)
-    # auto_excludes = []
-    # if not output_dir.startswith(".."):
-    #     auto_excludes.append(output_dir.replace("\\", "/") + "/**")
-    # files = walk_filesystem(repo_root, auto_excludes)
-    # print(f"  Total files inventoried: {len(files)}")
-
-    # Build file list directly from FOSSology findings
-    files = []
-    for path, data in findings.items():
-        files.append({
-            "path": path,
-            "sha256": data.get("checksums", {}).get("sha256", ""),
-            "licenses": data.get("licenses", []),
-            "copyrights": data.get("copyrights", []),
-            "mime_type": "",
-            "purpose": "file",
-        })
-    print(f"  Files from agent output: {len(files)}")
-
-    # 1.4 Merge (commented out — data already combined above)
-    # print(f"\n  [1.4] Merging data sources:")
-    # packages, files = merge_data(findings, packages, files)
+    # 1.4 Merge FOSSology findings into file/package inventory
+    print(f"\n  [1.4] Merging data sources:")
+    packages, files = merge_data(findings, packages, files)
 
     # Count enrichment stats
     files_with_license = sum(1 for f in files if f.get("licenses"))
@@ -1154,10 +1013,8 @@ def build(
     creation_info, agent_elements = build_creation_info(base_uri)
     print(f"  [2.1] CreationInfo: {len(agent_elements)} agent/tool elements")
 
-    # 2.2 Packages (commented out — using only agent output)
-    # pkg_elements, pkg_lic_elements = build_package_elements(packages, base_uri, lic_counter)
-    pkg_elements = []
-    pkg_lic_elements = []
+    # 2.2 Packages
+    pkg_elements, pkg_lic_elements = build_package_elements(packages, base_uri, lic_counter)
     print(f"  [2.2] Packages: {len(pkg_elements)} elements, {len(pkg_lic_elements)} license elements")
 
     # 2.3 Files
@@ -1210,36 +1067,21 @@ def build(
     # Assemble @graph
     graph = [creation_info, spdx_document] + all_elements
 
-    # ── Phase 3: Clearing & Validation ──
-    print(f"\n[Phase 3] Clearing & Validation...\n")
-
-    clearing_summary = None
-    if clearing_policy:
-        annotations, clearing_summary = apply_clearing(graph, clearing_policy, base_uri)
-        if annotations:
-            graph.extend(annotations)
-            for ann in annotations:
-                all_element_ids.append(ann["@id"])
-            spdx_document["element"] = all_element_ids
-
-        print(f"  [3.1] Clearing: {len(clearing_summary['cleared'])} cleared, "
-              f"{len(clearing_summary['excluded'])} excluded, "
-              f"{len(clearing_summary['flagged'])} flagged")
-    else:
-        print("  [3.1] No clearing policy provided, skipping clearing decisions")
+    # ── Phase 3: Validation ──
+    print(f"\n[Phase 3] Validation...\n")
 
     # Validate
     all_errors = []
     for elem in graph:
         validate_element(elem, all_errors)
     if all_errors:
-        print(f"  [3.2] Validation: {len(all_errors)} issue(s):")
+        print(f"  Validation: {len(all_errors)} issue(s):")
         for err in all_errors[:10]:
             print(f"    - {err}")
         if len(all_errors) > 10:
             print(f"    ... and {len(all_errors) - 10} more")
     else:
-        print("  [3.2] Validation passed: all elements conform to SPDX 3.0")
+        print("  Validation passed: all elements conform to SPDX 3.0")
 
     # ── Phase 4: Serialize & Output ──
     print(f"\n[Phase 4] Serializing output...\n")
@@ -1250,12 +1092,6 @@ def build(
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(spdx3_doc, f, indent=4, ensure_ascii=False)
     print(f"  SPDX 3.0 JSON-LD written to: {output_path}")
-
-    # Write clearing report
-    if clearing_summary:
-        report_path = output_path.rsplit(".", 1)[0] + "_clearing_report.txt"
-        write_clearing_report(clearing_summary, report_path)
-        print(f"  Clearing report written to: {report_path}")
 
     # Summary
     print(f"\n{'='*60}")
@@ -1268,9 +1104,6 @@ def build(
     print(f"    Files:         {len(file_elements)}")
     print(f"    Relationships: {len(rel_elements)}")
     print(f"    License Elems: {len(pkg_lic_elements) + len(file_lic_elements)}")
-    if clearing_summary:
-        ann_count = len(clearing_summary["cleared"]) + len(clearing_summary["excluded"]) + len(clearing_summary["flagged"])
-        print(f"    Annotations:   {ann_count}")
     print(f"  Document URI:    {doc_id}")
     print()
 
@@ -1288,9 +1121,6 @@ Examples:
   # Basic: build from repo + FOSSology report
   python spdx3_builder.py --repo-root . --fossology-report results/ --output results/sbom_spdx3.jsonld
 
-  # With clearing decisions
-  python spdx3_builder.py --repo-root . --fossology-report results/ --output results/sbom_spdx3_cleared.jsonld --clearing-policy clearing-policy.json
-
   # Without FOSSology (lock files + filesystem only)
   python spdx3_builder.py --repo-root . --output results/sbom_spdx3.jsonld
         """,
@@ -1298,7 +1128,6 @@ Examples:
     parser.add_argument("--repo-root", required=True, help="Path to repository root directory")
     parser.add_argument("--fossology-report", default=None, help="Path to directory containing FOSSology report files")
     parser.add_argument("--output", required=True, help="Output path for SPDX 3.0 JSON-LD file")
-    parser.add_argument("--clearing-policy", default=None, help="Path to clearing-policy.json for clearing decisions")
 
     args = parser.parse_args()
 
@@ -1310,7 +1139,6 @@ Examples:
         repo_root=args.repo_root,
         report_dir=args.fossology_report,
         output_path=args.output,
-        clearing_policy_path=args.clearing_policy,
     )
 
 

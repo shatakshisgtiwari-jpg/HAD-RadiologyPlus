@@ -9,58 +9,42 @@ jobs:
   sbom_generation:
     runs-on: ubuntu-latest
     name: Generate SPDX 3.0 SBOM
+    permissions:
+      contents: read
+      packages: read
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: FOSSology scan
-        continue-on-error: true
-        uses: fossology/fossology-action@v1
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          scan_mode: 'repo'
-          scanners: 'copyright'
-          report_format: 'TEXT'
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull scanner image
+        run: docker pull ghcr.io/${{ github.repository }}/fossology-spdx3:latest
+
+      - name: Run SPDX 3.0 scan
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/opt/repo" \
+            -e GITHUB_REPOSITORY="${{ github.repository }}" \
+            -e GITHUB_REPOSITORY_OWNER="${{ github.repository_owner }}" \
+            -e GITHUB_ACTIONS=true \
+            ghcr.io/${{ github.repository }}/fossology-spdx3:latest \
+            copyright repo \
+            --output results/sbom_spdx3.jsonld
 
       - name: Fix result permissions
         if: always()
         run: sudo chmod -R a+rw results/ 2>/dev/null || true
 
-      - name: Set up Python
-        if: always()
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Generate SPDX 3.0 SBOM (plain)
-        if: always()
-        run: |
-          python scripts/spdx3_builder.py \
-            --repo-root . \
-            --fossology-report results/ \
-            --output results/sbom_spdx3.jsonld
-
-      - name: Generate SPDX 3.0 SBOM (with clearing decisions)
-        if: always()
-        run: |
-          python scripts/spdx3_builder.py \
-            --repo-root . \
-            --fossology-report results/ \
-            --output results/sbom_spdx3_cleared.jsonld \
-            --clearing-policy clearing-policy.json
-
-      - name: Display clearing report
-        if: always()
-        run: |
-          if [ -f results/sbom_spdx3_cleared_clearing_report.txt ]; then
-            echo "=== License Clearing Report ==="
-            cat results/sbom_spdx3_cleared_clearing_report.txt
-          else
-            echo "No clearing report generated"
-          fi
-
-      - name: Upload SBOM artifacts
+      - name: Upload SPDX 3.0 report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sbom-reports
+          name: spdx3-sbom
           path: results/
