@@ -4,11 +4,16 @@ on:
   push:
     branches:
       - main
+  workflow_run:
+    workflows: ["Build & Push FOSSology SPDX 3.0 Scanner Image"]
+    types: [completed]
 
 jobs:
   spdx3_generation:
     runs-on: ubuntu-latest
     name: Generate SPDX 3.0 Report
+    # Skip if triggered by a failed build workflow
+    if: ${{ github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
     permissions:
       contents: read
       packages: read
