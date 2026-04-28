@@ -8,7 +8,7 @@ WORKDIR /fossology
 
 RUN DEBIAN_FRONTEND=noninteractive apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates git lsb-release sudo cmake ninja-build \
+    ca-certificates git cmake ninja-build \
     gcc g++ libxslt1-dev dpkg-dev \
     libmagic-dev libjson-c-dev libglib2.0-dev \
     libboost-regex-dev libboost-system-dev \
@@ -56,7 +56,7 @@ COPY --from=builder /fossology/src/copyright/agent/keyword.conf \
     /usr/local/share/fossology/keyword/agent/keyword.conf
 
 COPY spdx3_builder.py /opt/spdx3_builder.py
-COPY fossology_spdx3_scanner.py /bin/fossologyscanner
+COPY fossology_spdx3_scanner.py /bin/spdx3scanner
 
-ENTRYPOINT ["python3", "/bin/fossologyscanner"]
+ENTRYPOINT ["python3", "/bin/spdx3scanner"]
 CMD ["copyright"]

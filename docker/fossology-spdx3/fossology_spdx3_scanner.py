@@ -64,7 +64,7 @@ def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
             if not path:
                 continue
             if path not in findings:
-                findings[path] = {"licenses": [], "copyrights": [], "checksums": {}}
+                findings[path] = {"copyrights": []}
 
             for finding in (entry.get('results') or []):
                 if finding is None:
@@ -82,7 +82,7 @@ def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
             if not path:
                 continue
             if path not in findings:
-                findings[path] = {"licenses": [], "copyrights": [], "checksums": {}}
+                findings[path] = {"copyrights": []}
             for finding in (entry.get('results') or []):
                 if finding and finding.get('content'):
                     text = f"[keyword] {finding['content'].strip()}"
@@ -140,8 +140,7 @@ def main(args: argparse.Namespace) -> int:
     findings = collect_findings(scanners_to_run, dir_to_scan)
 
     cr_count = sum(len(f["copyrights"]) for f in findings.values())
-    lic_count = sum(len(f["licenses"]) for f in findings.values())
-    logging.info(f"Collected {cr_count} (C) and {lic_count} license(s) across {len(findings)} file(s)")
+    logging.info(f"Collected {cr_count} copyright(s) across {len(findings)} file(s)")
 
     output_path = args.output
     output_dir = os.path.dirname(os.path.abspath(output_path))
