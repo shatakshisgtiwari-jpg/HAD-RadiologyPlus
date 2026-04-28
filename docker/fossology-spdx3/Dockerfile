@@ -12,6 +12,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update \
     gcc g++ libxslt1-dev dpkg-dev \
     libmagic-dev libjson-c-dev libglib2.0-dev \
     libboost-regex-dev libicu-dev libssl-dev \
+    libpq-dev \
  && rm -rf /var/lib/apt/lists/*
 
 ARG FOSSOLOGY_REPO=https://github.com/shatakshisgtiwari-jpg/fossology.git
@@ -20,15 +21,13 @@ ARG FOSSOLOGY_BRANCH=master
 RUN git clone --depth 1 --branch ${FOSSOLOGY_BRANCH} ${FOSSOLOGY_REPO} .
 
 RUN cmake -DCMAKE_BUILD_TYPE=MinSizeRel \
-    -DAGENTS="nomos;copyright;ojo" \
+    -DAGENTS="copyright" \
     -S . -B build -G Ninja \
- && ninja -C build nomossa copyright keyword ojo_exec
+ && ninja -C build copyright keyword
 
 RUN dpkg-shlibdeps -Orun-deps \
-    -ebuild/src/nomos/agent/nomossa \
     -ebuild/src/copyright/agent/copyright \
     -ebuild/src/copyright/agent/keyword \
-    -ebuild/src/ojo/agent/ojo \
  && sed -E -i -e 's/(shlibs:Depends=)|(\(>=?[ 0-9a-z:.~+-]*\))|(,)//ig' run-deps
 
 # ── Stage 2: Minimal runtime image ──
@@ -47,12 +46,8 @@ RUN echo 'APT::Install-Recommends "0"; APT::Install-Suggests "0";' \
  && DEBIAN_FRONTEND=noninteractive apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/* /opt/run-deps
 
-COPY --from=builder /fossology/build/src/nomos/agent/nomossa /bin/nomossa
 COPY --from=builder /fossology/build/src/copyright/agent/copyright /bin/copyright
 COPY --from=builder /fossology/build/src/copyright/agent/keyword /bin/keyword
-COPY --from=builder /fossology/build/src/ojo/agent/ojo /bin/ojo
-COPY --from=builder /fossology/src/nomos/agent/nomossa.conf \
-    /usr/local/share/fossology/nomos/agent/nomossa.conf
 COPY --from=builder /fossology/src/copyright/agent/copyright.conf \
     /usr/local/share/fossology/copyright/agent/copyright.conf
 COPY --from=builder /fossology/src/copyright/agent/keyword.conf \

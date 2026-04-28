@@ -8,7 +8,6 @@
 import argparse
 import json
 import logging
-import multiprocessing
 import os
 import sys
 from subprocess import Popen, PIPE
@@ -21,8 +20,6 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 SCANNERS = {
     'copyright': '/bin/copyright',
-    'nomos': '/bin/nomossa',
-    'ojo': '/bin/ojo',
     'keyword': '/bin/keyword',
 }
 
@@ -77,17 +74,6 @@ def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
                     if text and text not in findings[path]["copyrights"]:
                         findings[path]["copyrights"].append(text)
 
-    if 'nomos' in scanners:
-        logging.info("Scanning for licenses (nomos)...")
-        extra = ["-S", "-l", "-n", str(max(1, multiprocessing.cpu_count() - 1))]
-        raw = run_scanner(SCANNERS['nomos'], dir_to_scan, extra)
-        _collect_licenses(raw, findings, dir_to_scan)
-
-    if 'ojo' in scanners:
-        logging.info("Scanning for licenses (ojo)...")
-        raw = run_scanner(SCANNERS['ojo'], dir_to_scan)
-        _collect_licenses(raw, findings, dir_to_scan)
-
     if 'keyword' in scanners:
         logging.info("Scanning for keywords...")
         raw = run_scanner(SCANNERS['keyword'], dir_to_scan)
@@ -112,22 +98,6 @@ def _get_results_list(raw) -> list:
     if isinstance(raw, dict):
         return raw.get('results', [])
     return []
-
-
-def _collect_licenses(raw, findings: dict, dir_to_scan: str) -> None:
-    for entry in _get_results_list(raw):
-        path = _normalize_path(entry.get('file', ''), dir_to_scan)
-        if not path:
-            continue
-        if path not in findings:
-            findings[path] = {"licenses": [], "copyrights": [], "checksums": {}}
-
-        for finding in (entry.get('licenses') or []):
-            if finding is None:
-                continue
-            lic = finding.get('license', '').strip()
-            if lic and lic != 'No_license_found' and lic not in findings[path]["licenses"]:
-                findings[path]["licenses"].append(lic)
 
 
 def _normalize_path(path: str, dir_to_scan: str) -> str:
