@@ -37,12 +37,14 @@ def run_scanner(scanner_path: str, dir_to_scan: str,
         command.extend(extra_args)
 
     logging.info(f"Running: {' '.join(command)}")
-    process = Popen(command, stdout=PIPE, text=True, encoding='UTF-8')
-    stdout, _ = process.communicate()
+    process = Popen(command, stdout=PIPE, stderr=PIPE, text=True, encoding='UTF-8')
+    stdout, stderr = process.communicate()
 
     if process.returncode != 0:
-        logging.error(f"{scanner_path} exited with code {process.returncode}")
-        return {}
+        # /bin/copyright returns non-zero when it finds copyrights — that's expected
+        logging.warning(f"{scanner_path} exited with code {process.returncode} (normal when findings exist)")
+        if stderr:
+            logging.warning(f"stderr: {stderr.strip()[:500]}")
 
     if not stdout.strip():
         return {}
