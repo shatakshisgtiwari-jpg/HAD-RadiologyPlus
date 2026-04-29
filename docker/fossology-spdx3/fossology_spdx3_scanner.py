@@ -8,6 +8,7 @@
 import argparse
 import json
 import logging
+import multiprocessing
 import os
 import sys
 from subprocess import Popen, PIPE
@@ -21,7 +22,7 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 SCANNERS = {
     'copyright': '/bin/copyright',
     'keyword': '/bin/keyword',
-    'nomos': '/bin/nomos',
+    'nomos': '/bin/nomossa',
     'ojo': '/bin/ojo',
 }
 
@@ -84,7 +85,8 @@ def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
 
     if 'nomos' in scanners:
         logging.info("Scanning for licenses (nomos)...")
-        raw = run_scanner(SCANNERS['nomos'], dir_to_scan)
+        nomos_extra = ["-S", "-l", "-n", str(max(1, multiprocessing.cpu_count() - 1))]
+        raw = run_scanner(SCANNERS['nomos'], dir_to_scan, extra_args=nomos_extra)
         for entry in _get_results_list(raw):
             path = _normalize_path(entry.get('file', ''), dir_to_scan)
             if not path:

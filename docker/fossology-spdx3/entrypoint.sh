@@ -25,8 +25,9 @@ if echo "$MODIFIED_ARGS" | grep -qi "SPDX3_JSON"; then
 fi
 
 # ── Step 2: Run original fossologyscanner with all args ──
-# This is exactly what upstream fossology-action does
-/bin/fossologyscanner $MODIFIED_ARGS || true
+# Args arrive as a single folded string starting with /bin/fossologyscanner.
+# We run it directly so the binary isn't doubled.
+$MODIFIED_ARGS || true
 SCAN_EXIT=$?
 
 echo ""
