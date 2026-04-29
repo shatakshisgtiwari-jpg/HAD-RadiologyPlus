@@ -20,7 +20,7 @@ jobs:
         with:
           scan_mode: 'repo'
           scanners: 'copyright'
-          report_format: 'TEXT'
+          report_format: 'SPDX_JSON'
           allowlist_file_path: 'allowlist.json'
 
       - name: Fix result permissions
