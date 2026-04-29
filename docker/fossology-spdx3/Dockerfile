@@ -1,62 +1,20 @@
 # SPDX-FileCopyrightText: 2026 Contributors
 # SPDX-License-Identifier: MIT
 
-# ── Stage 1: Build C scanner binaries from source ──
-FROM debian:bookworm-slim AS builder
-
-WORKDIR /fossology
-
-RUN DEBIAN_FRONTEND=noninteractive apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates git cmake ninja-build \
-    gcc g++ libxslt1-dev dpkg-dev \
-    libmagic-dev libjson-c-dev libglib2.0-dev \
-    libboost-regex-dev libboost-system-dev \
-    libboost-filesystem-dev libboost-program-options-dev \
-    libicu-dev libssl-dev libpq-dev \
-    librpm-dev libxml2-dev libjsoncpp-dev \
- && rm -rf /var/lib/apt/lists/*
-
-ARG FOSSOLOGY_REPO=https://github.com/shatakshisgtiwari-jpg/fossology.git
-ARG FOSSOLOGY_BRANCH=master
-
-RUN git clone --depth 1 --branch ${FOSSOLOGY_BRANCH} ${FOSSOLOGY_REPO} .
-
-RUN cmake -DCMAKE_BUILD_TYPE=MinSizeRel \
-    -DAGENTS="copyright" \
-    -S . -B build -G Ninja \
- && ninja -C build copyright keyword
-
-RUN dpkg-shlibdeps -Orun-deps \
-    -ebuild/src/copyright/agent/copyright \
-    -ebuild/src/copyright/agent/keyword \
- && sed -E -i -e 's/(shlibs:Depends=)|(\(>=?[ 0-9a-z:.~+-]*\))|(,)//ig' run-deps
-
-# ── Stage 2: Minimal runtime image ──
-FROM debian:bookworm-slim
+# ── Base: official FOSSology scanner image ──
+# Contains /bin/fossologyscanner, nomos, ojo, copyright, keyword
+# and the full CLI interface (scan_mode, report_format, allowlist, etc.)
+FROM fossology/fossology:scanner
 
 LABEL org.opencontainers.image.authors="shatakshisgtiwari-jpg"
-LABEL org.opencontainers.image.description="FOSSology SPDX 3.0 scanner"
+LABEL org.opencontainers.image.description="FOSSology scanner + SPDX 3.0 report builder"
 
-COPY --from=builder /fossology/run-deps /opt/run-deps
-
-RUN echo 'APT::Install-Recommends "0"; APT::Install-Suggests "0";' \
-    >> /etc/apt/apt.conf \
- && DEBIAN_FRONTEND=noninteractive apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    $(cat /opt/run-deps) python3 \
- && DEBIAN_FRONTEND=noninteractive apt-get autoremove -y \
- && rm -rf /var/lib/apt/lists/* /opt/run-deps
-
-COPY --from=builder /fossology/build/src/copyright/agent/copyright /bin/copyright
-COPY --from=builder /fossology/build/src/copyright/agent/keyword /bin/keyword
-COPY --from=builder /fossology/src/copyright/agent/copyright.conf \
-    /usr/local/share/fossology/copyright/agent/copyright.conf
-COPY --from=builder /fossology/src/copyright/agent/keyword.conf \
-    /usr/local/share/fossology/keyword/agent/keyword.conf
-
+# Layer SPDX 3.0 scripts on top of the official image
 COPY spdx3_builder.py /opt/spdx3_builder.py
-COPY fossology_spdx3_scanner.py /bin/spdx3scanner
+COPY fossology_spdx3_scanner.py /opt/spdx3_scanner.py
 
-ENTRYPOINT ["python3", "/bin/spdx3scanner"]
-CMD ["copyright"]
+# Wrapper entrypoint: runs fossologyscanner then generates SPDX 3.0 report
+COPY entrypoint.sh /opt/entrypoint.sh
+RUN chmod +x /opt/entrypoint.sh
+
+ENTRYPOINT ["/opt/entrypoint.sh"]

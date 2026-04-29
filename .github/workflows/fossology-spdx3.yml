@@ -10,8 +10,8 @@ env:
   IMAGE_NAME: fossology-spdx3
 
 jobs:
-  # ── Job 1: Build & push image (skips if Docker files unchanged) ──
-  build-and-push:
+  # ── Job 1: Build & push custom scanner image (skips if unchanged) ──
+  build-image:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -52,11 +52,11 @@ jobs:
         if: steps.changes.outputs.image_changed == 'false'
         run: echo "No changes to docker/fossology-spdx3/ — skipping image build"
 
-  # ── Job 2: Generate SPDX 3.0 report (always waits for build) ──
-  spdx3-report:
+  # ── Job 2: Scan repo → Generate SPDX 3.0 report → Archive ──
+  scan-and-report:
     runs-on: ubuntu-latest
-    needs: build-and-push
-    name: Generate SPDX 3.0 Report
+    needs: build-image
+    name: FOSSology Scan + SPDX 3.0 Report
     permissions:
       contents: read
 
@@ -64,27 +64,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Step 1: Run the official FOSSology scan (produces results/ with TEXT report)
-      # TODO: Replace with your fork once SPDX 3.0 is integrated there:
-      #   uses: shatakshisgtiwari-jpg/fossology-action@main
-      - name: Run FOSSology scan
-        uses: fossology/fossology-action@v1
+      # Pulls custom image → scans in repo mode → generates SPDX 3.0 JSON-LD
+      - name: Run FOSSology scan + SPDX 3.0 report
+        uses: shatakshisgtiwari-jpg/fossology-action@main
         with:
           scan_mode: 'repo'
           scanners: 'nomos ojo copyright keyword'
           report_format: 'TEXT'
-
-      # Step 2: Generate SPDX 3.0 report from scan results
-      - name: Generate SPDX 3.0 report
-        uses: ./docker/fossology-spdx3
+          allowlist_file_path: 'allowlist.json'
 
       - name: Fix result permissions
         if: always()
         run: sudo chmod -R a+rw results/ 2>/dev/null || true
 
-      - name: Upload scan results
+      - name: Upload SPDX 3.0 report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fossology-scan-results
+          name: spdx3-report
           path: results/

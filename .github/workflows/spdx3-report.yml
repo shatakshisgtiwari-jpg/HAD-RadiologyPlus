@@ -1,18 +1,12 @@
-name: SPDX 3.0 Report Generation
+name: SPDX 3.0 Report (Manual)
 
 on:
-  # Always runs after the build workflow (which runs on every push to main)
-  workflow_run:
-    workflows: ["Build & Push Scanner Image"]
-    types: [completed]
   workflow_dispatch:
 
 jobs:
-  spdx3_generation:
+  scan-and-report:
     runs-on: ubuntu-latest
-    name: Generate SPDX 3.0 Report
-    # Skip if triggered by a failed build workflow
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    name: FOSSology Scan + SPDX 3.0 Report
     permissions:
       contents: read
 
@@ -20,27 +14,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Step 1: Run the official FOSSology scan (produces results/ with TEXT report)
-      # TODO: Replace with your fork once SPDX 3.0 is integrated there:
-      #   uses: shatakshisgtiwari-jpg/fossology-action@main
-      - name: Run FOSSology scan
-        uses: fossology/fossology-action@v1
+      # Pulls custom image → scans in repo mode → generates SPDX 3.0 JSON-LD
+      - name: Run FOSSology scan + SPDX 3.0 report
+        uses: shatakshisgtiwari-jpg/fossology-action@main
         with:
           scan_mode: 'repo'
           scanners: 'nomos ojo copyright keyword'
           report_format: 'TEXT'
-
-      # Step 2: Generate SPDX 3.0 report from scan results
-      - name: Generate SPDX 3.0 report
-        uses: ./docker/fossology-spdx3
+          allowlist_file_path: 'allowlist.json'
 
       - name: Fix result permissions
         if: always()
         run: sudo chmod -R a+rw results/ 2>/dev/null || true
 
-      - name: Upload scan results
+      - name: Upload SPDX 3.0 report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fossology-scan-results
+          name: spdx3-report
           path: results/
