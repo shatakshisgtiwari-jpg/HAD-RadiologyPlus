@@ -70,6 +70,8 @@ jobs:
         with:
           scan_mode: 'repo'
           scanners: 'copyright'
+          report_format: 'SPDX3_JSON'
+          allowlist_file_path: 'allowlist.json'
 
       - name: Fix result permissions
         if: always()

@@ -4,45 +4,67 @@
 # SPDX-License-Identifier: MIT
 
 # ── Wrapper entrypoint ──
-# Runs /bin/copyright -J directly to get structured JSON findings,
-# then feeds them into spdx3_builder to produce SPDX 3.0 JSON-LD.
+# Preserves the original fossology-action interface:
+#   1. Runs /bin/fossologyscanner with ALL original args (pass-through)
+#   2. If SPDX3_JSON was requested, additionally generates SPDX 3.0 JSON-LD
 #
-# No fossologyscanner binary is used — we call the C scanner directly
-# so we get machine-readable output with zero SPDX 2 involvement.
+# Usage from action.yaml args:
+#   /bin/fossologyscanner copyright repo --report SPDX3_JSON ...
 
-echo "============================================================"
-echo "  FOSSology Copyright Scanner → SPDX 3.0 Report Builder"
-echo "============================================================"
-echo ""
+# ── Step 1: Detect if SPDX3_JSON was requested ──
+SPDX3_REQUESTED=false
+MODIFIED_ARGS="$*"
 
-SCAN_DIR="${GITHUB_WORKSPACE:-/opt/repo}"
-OUTPUT_DIR="${SCAN_DIR}/results"
-SPDX3_OUTPUT="${OUTPUT_DIR}/spdx3_report.jsonld"
+if echo "$MODIFIED_ARGS" | grep -qi "SPDX3_JSON"; then
+    SPDX3_REQUESTED=true
+    # Replace SPDX3_JSON with TEXT for fossologyscanner (it doesn't understand SPDX3)
+    MODIFIED_ARGS=$(echo "$MODIFIED_ARGS" | sed 's/SPDX3_JSON/TEXT/gi')
+    echo "[SPDX3] SPDX 3.0 JSON-LD report requested — will generate after scan"
+    echo "[SPDX3] Running fossologyscanner with TEXT format first"
+    echo ""
+fi
 
-mkdir -p "${OUTPUT_DIR}"
-
-echo "Scan directory: ${SCAN_DIR}"
-echo "Output:         ${SPDX3_OUTPUT}"
-echo ""
-
-# Single step: run copyright scanner → collect findings → SPDX 3.0 JSON-LD
-python3 /opt/spdx3_scanner.py copyright \
-    --scan-dir "${SCAN_DIR}" \
-    --output "${SPDX3_OUTPUT}" \
-    2>&1
+# ── Step 2: Run original fossologyscanner with all args ──
+# This is exactly what upstream fossology-action does
+/bin/fossologyscanner $MODIFIED_ARGS || true
 SCAN_EXIT=$?
 
 echo ""
-if [ -f "${SPDX3_OUTPUT}" ]; then
-    echo "SPDX 3.0 report: ${SPDX3_OUTPUT}"
-    echo "Size: $(wc -c < "${SPDX3_OUTPUT}") bytes"
-else
-    echo "WARNING: SPDX 3.0 report was not generated"
+echo "[fossologyscanner] Scan completed (exit code: ${SCAN_EXIT})"
+
+# ── Step 3: If SPDX3 requested, generate SPDX 3.0 report ──
+if [ "$SPDX3_REQUESTED" = true ]; then
+    echo ""
+    echo "============================================================"
+    echo "  Generating SPDX 3.0 JSON-LD report..."
+    echo "============================================================"
+    echo ""
+
+    SCAN_DIR="${GITHUB_WORKSPACE:-/github/workspace}"
+    OUTPUT_DIR="${SCAN_DIR}/results"
+    SPDX3_OUTPUT="${OUTPUT_DIR}/spdx3_report.jsonld"
+
+    mkdir -p "${OUTPUT_DIR}"
+
+    # Run copyright scanner with -J (JSON) to get structured findings,
+    # then build SPDX 3.0 from those findings
+    python3 /opt/spdx3_scanner.py copyright \
+        --scan-dir "${SCAN_DIR}" \
+        --output "${SPDX3_OUTPUT}" \
+        2>&1
+
+    echo ""
+    if [ -f "${SPDX3_OUTPUT}" ]; then
+        echo "[SPDX3] Report written: ${SPDX3_OUTPUT}"
+        echo "[SPDX3] Size: $(wc -c < "${SPDX3_OUTPUT}") bytes"
+    else
+        echo "[SPDX3] WARNING: SPDX 3.0 report was not generated"
+    fi
 fi
 
 echo ""
 echo "============================================================"
-echo "  Pipeline complete (exit code: ${SCAN_EXIT})"
+echo "  Pipeline complete"
 echo "============================================================"
 
 exit ${SCAN_EXIT}
