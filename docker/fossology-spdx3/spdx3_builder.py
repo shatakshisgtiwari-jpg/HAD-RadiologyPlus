@@ -49,6 +49,84 @@ HASH_ALGO_MAP = {
 }
 
 
+SPDX3_JSON_SCHEMA_URL = "https://spdx.org/schema/3.0.1/spdx-json-schema.json"
+SPDX3_SHACL_URL = "https://spdx.org/rdf/3.0.1/spdx-model.ttl"
+
+
+def _validate_report(report_path: str) -> None:
+    """Validate the generated SPDX 3.0 JSON-LD report.
+
+    Runs two checks:
+      1. JSON Schema (structural) — via check-jsonschema or jsonschema
+      2. SHACL (semantic) — via pyshacl
+    Failures are logged as warnings but do not block the pipeline.
+    """
+    passed = 0
+    failed = 0
+
+    # ── 1. JSON Schema validation ──
+    try:
+        import jsonschema
+        import urllib.request
+
+        print("  [Validation] Downloading SPDX 3.0 JSON Schema...")
+        with urllib.request.urlopen(SPDX3_JSON_SCHEMA_URL) as resp:
+            schema = json.loads(resp.read().decode('utf-8'))
+
+        with open(report_path, 'r', encoding='utf-8') as f:
+            doc = json.load(f)
+
+        validator = jsonschema.Draft202012Validator(schema)
+        errors = list(validator.iter_errors(doc))
+        if errors:
+            failed += 1
+            print(f"  [Validation] JSON Schema: FAILED ({len(errors)} error(s))")
+            for err in errors[:5]:
+                print(f"    - {err.message[:200]}")
+            if len(errors) > 5:
+                print(f"    ... and {len(errors) - 5} more")
+        else:
+            passed += 1
+            print("  [Validation] JSON Schema: PASSED")
+    except ImportError:
+        print("  [Validation] JSON Schema: SKIPPED (jsonschema not installed)")
+    except Exception as e:
+        print(f"  [Validation] JSON Schema: ERROR ({e})")
+
+    # ── 2. SHACL validation (semantic) ──
+    try:
+        from pyshacl import validate as shacl_validate
+        from rdflib import Graph
+
+        print("  [Validation] Running SHACL validation against SPDX 3.0 model...")
+        data_graph = Graph()
+        data_graph.parse(report_path, format="json-ld")
+
+        conforms, results_graph, results_text = shacl_validate(
+            data_graph=data_graph,
+            shacl_graph=SPDX3_SHACL_URL,
+            ont_graph=SPDX3_SHACL_URL,
+        )
+        if conforms:
+            passed += 1
+            print("  [Validation] SHACL: PASSED")
+        else:
+            failed += 1
+            # Show first few violations
+            lines = results_text.strip().split('\n')
+            print(f"  [Validation] SHACL: FAILED")
+            for line in lines[:10]:
+                print(f"    {line}")
+            if len(lines) > 10:
+                print(f"    ... and {len(lines) - 10} more lines")
+    except ImportError:
+        print("  [Validation] SHACL: SKIPPED (pyshacl not installed)")
+    except Exception as e:
+        print(f"  [Validation] SHACL: ERROR ({e})")
+
+    print(f"\n  Validation summary: {passed} passed, {failed} failed")
+
+
 def _base_uri(doc_name: str) -> str:
     unique = uuid.uuid4().hex[:12]
     safe = re.sub(r"[^a-zA-Z0-9._-]", "-", doc_name)
@@ -139,6 +217,10 @@ def build(
     rel_idx = 0
 
     for fidx, (path, data) in enumerate(findings.items()):
+        # Skip files with no findings — they add no value to the report
+        if not data.get("copyrights") and not data.get("licenses"):
+            continue
+
         file_id = f"{base}/File/{fidx}"
 
         hashes = []
@@ -237,6 +319,10 @@ def build(
 
     size = os.path.getsize(actual_path)
     print(f"  SPDX 3.0 JSON-LD written to: {actual_path}")
+
+    # ── Phase 4: Validate the report ─────────────────────────────
+    print(f"\n[Phase 4] Validating SPDX 3.0 report...\n")
+    _validate_report(actual_path)
 
     total = len(payload.get_full_map())
     print(f"\n{'='*60}")

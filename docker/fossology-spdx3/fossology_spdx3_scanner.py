@@ -132,6 +132,12 @@ def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
                     if text not in findings[path]["copyrights"]:
                         findings[path]["copyrights"].append(text)
 
+    # Remove entries with no actual findings (reduces report bloat)
+    findings = {
+        path: data for path, data in findings.items()
+        if data.get("copyrights") or data.get("licenses")
+    }
+
     return findings
 
 

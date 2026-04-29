@@ -11,7 +11,7 @@ LABEL org.opencontainers.image.description="FOSSology scanner + SPDX 3.0 report 
 
 # Ensure pip is available, then install spdx-tools for SPDX 3.0
 # --break-system-packages is needed on Debian Bookworm (PEP 668) inside Docker
-RUN pip3 install --no-cache-dir --break-system-packages spdx-tools
+RUN pip3 install --no-cache-dir --break-system-packages spdx-tools pyshacl jsonschema
 
 # SPDX 3.0 builder + scanner
 COPY spdx3_builder.py /opt/spdx3_builder.py
