@@ -59,32 +59,16 @@ jobs:
     name: Generate SPDX 3.0 Report
     permissions:
       contents: read
-      packages: read
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Pull scanner image
-        run: docker pull ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest
-
       - name: Run SPDX 3.0 scan
-        run: |
-          docker run --rm \
-            -v "${{ github.workspace }}:/opt/repo" \
-            -e GITHUB_REPOSITORY="${{ github.repository }}" \
-            -e GITHUB_REPOSITORY_OWNER="${{ github.repository_owner }}" \
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest \
-            copyright \
-            --scan-dir /opt/repo \
-            --output /opt/repo/results/spdx3_report.jsonld
+        uses: ./docker/fossology-spdx3
+        with:
+          scanners: copyright
+          output: results/spdx3_report.jsonld
 
       - name: Fix result permissions
         if: always()

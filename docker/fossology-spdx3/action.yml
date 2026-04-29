@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 Contributors
+# SPDX-License-Identifier: MIT
+
+name: 'FOSSology SPDX 3.0 Scanner'
+description: 'Scan a repository for copyrights/keywords and generate an SPDX 3.0 JSON-LD report'
+branding:
+  icon: 'shield'
+  color: 'green'
+
+inputs:
+  scanners:
+    description: 'Space-separated list of scanners to run (copyright, keyword)'
+    required: false
+    default: 'copyright'
+  scan-dir:
+    description: 'Directory to scan inside the container'
+    required: false
+    default: '/github/workspace'
+  output:
+    description: 'Output path for the SPDX 3.0 JSON-LD report (relative to workspace)'
+    required: false
+    default: 'results/spdx3_report.jsonld'
+
+outputs:
+  report-path:
+    description: 'Path to the generated SPDX 3.0 report'
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  args:
+    - ${{ inputs.scanners }}
+    - '--scan-dir'
+    - ${{ inputs.scan-dir }}
+    - '--output'
+    - '/github/workspace/${{ inputs.output }}'
+  env:
+    GITHUB_REPOSITORY: ${{ github.repository }}
+    GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
