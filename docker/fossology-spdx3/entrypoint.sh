@@ -20,7 +20,9 @@ echo "[Step 1/2] Running FOSSology scanner..."
 echo ""
 
 # Pass all arguments directly to fossologyscanner
-/bin/fossologyscanner "$@"
+# Note: args arrive as a single folded string from action.yaml,
+# so we use $* without quotes to allow word splitting
+/bin/fossologyscanner $*
 SCAN_EXIT=$?
 
 echo ""
