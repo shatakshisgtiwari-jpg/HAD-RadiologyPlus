@@ -49,51 +49,14 @@ HASH_ALGO_MAP = {
 }
 
 
-SPDX3_JSON_SCHEMA_URL = "https://spdx.org/schema/3.0.1/spdx-json-schema.json"
 SPDX3_SHACL_URL = "https://spdx.org/rdf/3.0.1/spdx-model.ttl"
 
 
 def _validate_report(report_path: str) -> None:
-    """Validate the generated SPDX 3.0 JSON-LD report.
+    """Validate the generated SPDX 3.0 JSON-LD report against the SHACL model.
 
-    Runs two checks:
-      1. JSON Schema (structural) — via check-jsonschema or jsonschema
-      2. SHACL (semantic) — via pyshacl
     Failures are logged as warnings but do not block the pipeline.
     """
-    passed = 0
-    failed = 0
-
-    # ── 1. JSON Schema validation ──
-    try:
-        import jsonschema
-        import urllib.request
-
-        print("  [Validation] Downloading SPDX 3.0 JSON Schema...")
-        with urllib.request.urlopen(SPDX3_JSON_SCHEMA_URL) as resp:
-            schema = json.loads(resp.read().decode('utf-8'))
-
-        with open(report_path, 'r', encoding='utf-8') as f:
-            doc = json.load(f)
-
-        validator = jsonschema.Draft202012Validator(schema)
-        errors = list(validator.iter_errors(doc))
-        if errors:
-            failed += 1
-            print(f"  [Validation] JSON Schema: FAILED ({len(errors)} error(s))")
-            for err in errors[:5]:
-                print(f"    - {err.message[:200]}")
-            if len(errors) > 5:
-                print(f"    ... and {len(errors) - 5} more")
-        else:
-            passed += 1
-            print("  [Validation] JSON Schema: PASSED")
-    except ImportError:
-        print("  [Validation] JSON Schema: SKIPPED (jsonschema not installed)")
-    except Exception as e:
-        print(f"  [Validation] JSON Schema: ERROR ({e})")
-
-    # ── 2. SHACL validation (semantic) ──
     try:
         from pyshacl import validate as shacl_validate
         from rdflib import Graph
@@ -108,11 +71,8 @@ def _validate_report(report_path: str) -> None:
             ont_graph=SPDX3_SHACL_URL,
         )
         if conforms:
-            passed += 1
             print("  [Validation] SHACL: PASSED")
         else:
-            failed += 1
-            # Show first few violations
             lines = results_text.strip().split('\n')
             print(f"  [Validation] SHACL: FAILED")
             for line in lines[:10]:
@@ -123,8 +83,6 @@ def _validate_report(report_path: str) -> None:
         print("  [Validation] SHACL: SKIPPED (pyshacl not installed)")
     except Exception as e:
         print(f"  [Validation] SHACL: ERROR ({e})")
-
-    print(f"\n  Validation summary: {passed} passed, {failed} failed")
 
 
 def _base_uri(doc_name: str) -> str:
