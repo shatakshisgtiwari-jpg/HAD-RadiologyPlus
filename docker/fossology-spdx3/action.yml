@@ -34,6 +34,3 @@ runs:
     - ${{ inputs.scan-dir }}
     - '--output'
     - '/github/workspace/${{ inputs.output }}'
-  env:
-    GITHUB_REPOSITORY: ${{ github.repository }}
-    GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
