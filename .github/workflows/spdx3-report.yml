@@ -20,19 +20,27 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Run SPDX 3.0 scan
-        uses: ./docker/fossology-spdx3
+      # Step 1: Run the official FOSSology scan (produces results/ with TEXT report)
+      # TODO: Replace with your fork once SPDX 3.0 is integrated there:
+      #   uses: shatakshisgtiwari-jpg/fossology-action@main
+      - name: Run FOSSology scan
+        uses: fossology/fossology-action@v1
         with:
-          scanners: copyright
-          output: results/spdx3_report.jsonld
+          scan_mode: 'repo'
+          scanners: 'nomos ojo copyright keyword'
+          report_format: 'TEXT'
+
+      # Step 2: Generate SPDX 3.0 report from scan results
+      - name: Generate SPDX 3.0 report
+        uses: ./docker/fossology-spdx3
 
       - name: Fix result permissions
         if: always()
         run: sudo chmod -R a+rw results/ 2>/dev/null || true
 
-      - name: Upload SPDX 3.0 report
+      - name: Upload scan results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: spdx3-report
+          name: fossology-scan-results
           path: results/

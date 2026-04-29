@@ -1,23 +1,25 @@
 # SPDX-FileCopyrightText: 2026 Contributors
 # SPDX-License-Identifier: MIT
 
-name: 'FOSSology SPDX 3.0 Scanner'
-description: 'Scan a repository for copyrights/keywords and generate an SPDX 3.0 JSON-LD report'
+# ──────────────────────────────────────────────────────────────
+# This is a lightweight SPDX 3.0 post-processing action.
+# For the full FOSSology scan, use a fork of fossology/fossology-action
+# that integrates this builder into its pipeline.
+# ──────────────────────────────────────────────────────────────
+
+name: 'SPDX 3.0 Report Builder'
+description: 'Convert FOSSology scan results into an SPDX 3.0 JSON-LD report'
 branding:
   icon: 'shield'
   color: 'green'
 
 inputs:
-  scanners:
-    description: 'Space-separated list of scanners to run (copyright, keyword)'
-    required: false
-    default: 'copyright'
   scan-dir:
-    description: 'Directory to scan inside the container'
+    description: 'Directory that was scanned (repo root)'
     required: false
     default: '/github/workspace'
   output:
-    description: 'Output path for the SPDX 3.0 JSON-LD report (relative to workspace)'
+    description: 'Output path for SPDX 3.0 JSON-LD (relative to workspace)'
     required: false
     default: 'results/spdx3_report.jsonld'
 
@@ -29,7 +31,7 @@ runs:
   using: 'docker'
   image: 'Dockerfile'
   args:
-    - ${{ inputs.scanners }}
+    - 'copyright'
     - '--scan-dir'
     - ${{ inputs.scan-dir }}
     - '--output'

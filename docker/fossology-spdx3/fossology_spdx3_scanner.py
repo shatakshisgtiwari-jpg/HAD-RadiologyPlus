@@ -119,6 +119,57 @@ def _normalize_path(path: str, dir_to_scan: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
+# TEXT report generator (matches fossology/fossology-action format)
+# ─────────────────────────────────────────────────────────────
+
+def write_text_report(findings: dict, output_dir: str,
+                      scanners_used: list[str]) -> str:
+    """Write a plain-text report matching the official FOSSology scanner output."""
+    report_path = os.path.join(output_dir, 'scan_report.txt')
+
+    with open(report_path, 'w', encoding='utf-8') as f:
+        f.write("=" * 70 + "\n")
+        f.write("FOSSology Scanner Report\n")
+        f.write(f"Scanners used: {', '.join(scanners_used)}\n")
+        f.write("=" * 70 + "\n\n")
+
+        if not findings:
+            f.write("No findings.\n")
+        else:
+            for filepath in sorted(findings.keys()):
+                data = findings[filepath]
+                copyrights = data.get("copyrights", [])
+                if not copyrights:
+                    continue
+
+                f.write(f"File: {filepath}\n")
+                for entry in copyrights:
+                    if entry.startswith("[keyword]"):
+                        f.write(f"  Keyword: {entry[len('[keyword] '):]}\n")
+                    else:
+                        f.write(f"  Copyright: {entry}\n")
+                f.write("\n")
+
+        f.write("=" * 70 + "\n")
+        total_cr = sum(
+            1 for d in findings.values()
+            for c in d.get("copyrights", [])
+            if not c.startswith("[keyword]")
+        )
+        total_kw = sum(
+            1 for d in findings.values()
+            for c in d.get("copyrights", [])
+            if c.startswith("[keyword]")
+        )
+        f.write(f"Total files scanned: {len(findings)}\n")
+        f.write(f"Total copyrights found: {total_cr}\n")
+        f.write(f"Total keywords found: {total_kw}\n")
+        f.write("=" * 70 + "\n")
+
+    return report_path
+
+
+# ─────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────
 
@@ -134,7 +185,10 @@ def main(args: argparse.Namespace) -> int:
     if not scanners_to_run:
         scanners_to_run = ['copyright']
 
+    report_format = (args.report or 'TEXT').upper()
+
     logging.info(f"Scanners: {', '.join(scanners_to_run)}")
+    logging.info(f"Report format: {report_format}")
     logging.info(f"Directory: {dir_to_scan}")
 
     findings = collect_findings(scanners_to_run, dir_to_scan)
@@ -152,7 +206,11 @@ def main(args: argparse.Namespace) -> int:
         json.dump(findings, f, indent=2, ensure_ascii=False)
     logging.info(f"Raw scan findings written to {findings_path}")
 
-    # Pass findings directly in memory (no disk round-trip)
+    # Generate TEXT report (matches fossology-action output)
+    text_report = write_text_report(findings, output_dir, scanners_to_run)
+    logging.info(f"TEXT report written to {text_report}")
+
+    # Always generate SPDX 3.0 JSON-LD (our value-add)
     spdx3_builder.build(
         repo_root=dir_to_scan,
         report_dir=None,
@@ -166,17 +224,22 @@ def main(args: argparse.Namespace) -> int:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="SPDX 3.0 Scanner",
+        description="FOSSology SPDX 3.0 Scanner (compatible with fossology/fossology-action)",
     )
 
     parser.add_argument(
         "scanners", type=str, nargs='*', default=['copyright'],
-        help="Scanners to run (default: copyright)",
+        help="Scanners to run: copyright, keyword (default: copyright)",
     )
 
     parser.add_argument(
         "--scan-dir", type=str, default=".",
         help="Directory to scan (default: current directory)",
+    )
+
+    parser.add_argument(
+        "--report", type=str, default="TEXT",
+        help="Report format: TEXT, SPDX_JSON (default: TEXT). SPDX 3.0 JSON-LD is always generated.",
     )
 
     parser.add_argument(
