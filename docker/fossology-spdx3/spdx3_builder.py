@@ -96,6 +96,7 @@ def build(
 
     print(f"  Files from agent findings: {len(findings)}")
     print(f"  Files with copyright data: {sum(1 for d in findings.values() if d.get('copyrights'))}")
+    print(f"  Files with license data: {sum(1 for d in findings.values() if d.get('licenses'))}")
 
     # ── Phase 2: Build SPDX 3.0 model elements ──────────────────
     print(f"\n[Phase 2] Building SPDX 3.0 elements...\n")
@@ -154,7 +155,8 @@ def build(
         concluded_license = None
         licenses = [l for l in data.get("licenses", []) if l and l not in ("NOASSERTION", "NONE")]
         if licenses:
-            lic_str = licenses[0]  # use first detected license
+            # Combine multiple licenses with AND (all detected in the file)
+            lic_str = " AND ".join(sorted(set(licenses)))
             concluded_license = CustomLicense(
                 license_id=lic_str,
                 license_name=lic_str,

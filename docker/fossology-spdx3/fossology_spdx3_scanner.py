@@ -21,6 +21,8 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 SCANNERS = {
     'copyright': '/bin/copyright',
     'keyword': '/bin/keyword',
+    'nomos': '/bin/nomos',
+    'ojo': '/bin/ojo',
 }
 
 SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '.venv', 'venv'}
@@ -59,14 +61,18 @@ def run_scanner(scanner_path: str, dir_to_scan: str,
 def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
     findings: dict[str, dict] = {}
 
+    def _ensure_entry(path):
+        if path not in findings:
+            findings[path] = {"copyrights": [], "licenses": []}
+
     if 'copyright' in scanners:
+        logging.info("Scanning for copyrights...")
         raw = run_scanner(SCANNERS['copyright'], dir_to_scan)
         for entry in _get_results_list(raw):
             path = _normalize_path(entry.get('file', ''), dir_to_scan)
             if not path:
                 continue
-            if path not in findings:
-                findings[path] = {"copyrights": []}
+            _ensure_entry(path)
 
             for finding in (entry.get('results') or []):
                 if finding is None:
@@ -76,6 +82,40 @@ def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
                     if text and text not in findings[path]["copyrights"]:
                         findings[path]["copyrights"].append(text)
 
+    if 'nomos' in scanners:
+        logging.info("Scanning for licenses (nomos)...")
+        raw = run_scanner(SCANNERS['nomos'], dir_to_scan)
+        for entry in _get_results_list(raw):
+            path = _normalize_path(entry.get('file', ''), dir_to_scan)
+            if not path:
+                continue
+            _ensure_entry(path)
+
+            for finding in (entry.get('results') or []):
+                if finding is None:
+                    continue
+                lic = (finding.get('license') or '').strip()
+                if lic and lic not in ('No_license_found', 'NOASSERTION', 'NONE', ''):
+                    if lic not in findings[path]["licenses"]:
+                        findings[path]["licenses"].append(lic)
+
+    if 'ojo' in scanners:
+        logging.info("Scanning for license references (ojo)...")
+        raw = run_scanner(SCANNERS['ojo'], dir_to_scan)
+        for entry in _get_results_list(raw):
+            path = _normalize_path(entry.get('file', ''), dir_to_scan)
+            if not path:
+                continue
+            _ensure_entry(path)
+
+            for finding in (entry.get('results') or []):
+                if finding is None:
+                    continue
+                lic = (finding.get('license') or '').strip()
+                if lic and lic not in ('NOASSERTION', 'NONE', ''):
+                    if lic not in findings[path]["licenses"]:
+                        findings[path]["licenses"].append(lic)
+
     if 'keyword' in scanners:
         logging.info("Scanning for keywords...")
         raw = run_scanner(SCANNERS['keyword'], dir_to_scan)
@@ -83,8 +123,7 @@ def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
             path = _normalize_path(entry.get('file', ''), dir_to_scan)
             if not path:
                 continue
-            if path not in findings:
-                findings[path] = {"copyrights": []}
+            _ensure_entry(path)
             for finding in (entry.get('results') or []):
                 if finding and finding.get('content'):
                     text = f"[keyword] {finding['content'].strip()}"
@@ -141,7 +180,8 @@ def write_text_report(findings: dict, output_dir: str,
             for filepath in sorted(findings.keys()):
                 data = findings[filepath]
                 copyrights = data.get("copyrights", [])
-                if not copyrights:
+                licenses = data.get("licenses", [])
+                if not copyrights and not licenses:
                     continue
 
                 f.write(f"File: {filepath}\n")
@@ -150,6 +190,8 @@ def write_text_report(findings: dict, output_dir: str,
                         f.write(f"  Keyword: {entry[len('[keyword] '):]}\n")
                     else:
                         f.write(f"  Copyright: {entry}\n")
+                for lic in licenses:
+                    f.write(f"  License: {lic}\n")
                 f.write("\n")
 
         f.write("=" * 70 + "\n")
@@ -163,8 +205,13 @@ def write_text_report(findings: dict, output_dir: str,
             for c in d.get("copyrights", [])
             if c.startswith("[keyword]")
         )
+        total_lic = sum(
+            len(d.get("licenses", []))
+            for d in findings.values()
+        )
         f.write(f"Total files scanned: {len(findings)}\n")
         f.write(f"Total copyrights found: {total_cr}\n")
+        f.write(f"Total licenses found: {total_lic}\n")
         f.write(f"Total keywords found: {total_kw}\n")
         f.write("=" * 70 + "\n")
 
@@ -196,7 +243,8 @@ def main(args: argparse.Namespace) -> int:
     findings = collect_findings(scanners_to_run, dir_to_scan)
 
     cr_count = sum(len(f["copyrights"]) for f in findings.values())
-    logging.info(f"Collected {cr_count} copyright(s) across {len(findings)} file(s)")
+    lic_count = sum(len(f.get("licenses", [])) for f in findings.values())
+    logging.info(f"Collected {cr_count} copyright(s), {lic_count} license(s) across {len(findings)} file(s)")
 
     output_path = args.output
     output_dir = os.path.dirname(os.path.abspath(output_path))
@@ -231,7 +279,7 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "scanners", type=str, nargs='*', default=['copyright'],
-        help="Scanners to run: copyright, keyword (default: copyright)",
+        help="Scanners to run: nomos, ojo, copyright, keyword (default: copyright)",
     )
 
     parser.add_argument(

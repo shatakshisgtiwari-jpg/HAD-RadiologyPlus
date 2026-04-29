@@ -46,9 +46,25 @@ if [ "$SPDX3_REQUESTED" = true ]; then
 
     mkdir -p "${OUTPUT_DIR}"
 
-    # Run copyright scanner with -J (JSON) to get structured findings,
+    # Extract scanner names from args (nomos, ojo, copyright, keyword)
+    DETECTED_SCANNERS=""
+    for word in $MODIFIED_ARGS; do
+        case "$word" in
+            nomos|ojo|copyright|keyword)
+                DETECTED_SCANNERS="$DETECTED_SCANNERS $word"
+                ;;
+        esac
+    done
+    DETECTED_SCANNERS=$(echo "$DETECTED_SCANNERS" | xargs)
+    if [ -z "$DETECTED_SCANNERS" ]; then
+        DETECTED_SCANNERS="copyright"
+    fi
+
+    echo "[SPDX3] Scanners: ${DETECTED_SCANNERS}"
+
+    # Run all detected scanners with -J (JSON) to get structured findings,
     # then build SPDX 3.0 from those findings
-    python3 /opt/spdx3_scanner.py copyright \
+    python3 /opt/spdx3_scanner.py $DETECTED_SCANNERS \
         --scan-dir "${SCAN_DIR}" \
         --output "${SPDX3_OUTPUT}" \
         2>&1

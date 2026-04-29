@@ -69,7 +69,7 @@ jobs:
         uses: shatakshisgtiwari-jpg/fossology-action@main
         with:
           scan_mode: 'repo'
-          scanners: 'copyright'
+          scanners: 'nomos ojo copyright keyword'
           report_format: 'SPDX3_JSON'
           allowlist_file_path: 'allowlist.json'
 
