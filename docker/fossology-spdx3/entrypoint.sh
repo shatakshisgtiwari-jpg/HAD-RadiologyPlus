@@ -1,4 +1,4 @@
-#!/bin/bash -e
+#!/bin/bash
 
 # SPDX-FileCopyrightText: 2026 Contributors
 # SPDX-License-Identifier: MIT
@@ -7,8 +7,9 @@
 # 1. Runs the original FOSSology scanner (produces TEXT scan output)
 # 2. Generates SPDX 3.0 JSON-LD report from scan results
 #
-# This replaces the default entrypoint so that the SPDX 3.0 report
-# is always generated as part of the scan pipeline.
+# Note: We do NOT use set -e because fossologyscanner exits non-zero
+# when it finds copyrights/licenses (expected behavior). We still
+# want Step 2 to run regardless.
 
 echo "============================================================"
 echo "  FOSSology Scanner + SPDX 3.0 Report Builder"
@@ -22,7 +23,7 @@ echo ""
 # Pass all arguments directly to fossologyscanner
 # Note: args arrive as a single folded string from action.yaml,
 # so we use $* without quotes to allow word splitting
-/bin/fossologyscanner $*
+/bin/fossologyscanner $* || true
 SCAN_EXIT=$?
 
 echo ""
