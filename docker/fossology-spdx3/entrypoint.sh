@@ -30,7 +30,7 @@ echo ""
 echo "[Step 1/2] FOSSology scan completed (exit code: ${SCAN_EXIT})"
 echo ""
 
-# ── Step 2: Generate SPDX 3.0 report ──
+# ── Step 2: Generate SPDX 3.0 report from Step 1's scan results ──
 echo "[Step 2/2] Generating SPDX 3.0 JSON-LD report..."
 echo ""
 
@@ -41,11 +41,17 @@ SPDX3_OUTPUT="${OUTPUT_DIR}/spdx3_report.jsonld"
 
 mkdir -p "${OUTPUT_DIR}"
 
-python3 /opt/spdx3_scanner.py \
-    copyright keyword \
-    --scan-dir "${SCAN_DIR}" \
-    --output "${SPDX3_OUTPUT}" \
-    2>&1 || echo "WARNING: SPDX 3.0 generation encountered issues"
+# Build SPDX 3.0 report directly (no re-scan, uses spdx3_builder only)
+python3 -c "
+import sys
+sys.path.insert(0, '/opt')
+import spdx3_builder
+spdx3_builder.build(
+    repo_root='${SCAN_DIR}',
+    report_dir=None,
+    output_path='${SPDX3_OUTPUT}',
+)
+" 2>&1 || echo "WARNING: SPDX 3.0 generation encountered issues"
 
 echo ""
 if [ -f "${SPDX3_OUTPUT}" ]; then
