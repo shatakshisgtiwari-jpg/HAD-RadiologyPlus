@@ -175,10 +175,6 @@ def build(
     rel_idx = 0
 
     for fidx, (path, data) in enumerate(findings.items()):
-        # Skip files with no findings — they add no value to the report
-        if not data.get("copyrights") and not data.get("licenses"):
-            continue
-
         file_id = f"{base}/File/{fidx}"
 
         hashes = []
@@ -186,9 +182,13 @@ def build(
         if sha:
             hashes.append(Hash(algorithm=HashAlgorithm.SHA256, hash_value=sha))
 
-        copyright_text = None
-        if data.get("copyrights"):
-            copyright_text = "\n".join(data["copyrights"])
+        # Combine copyrights and keywords into copyright_text
+        text_parts = []
+        for c in data.get("copyrights", []):
+            text_parts.append(c)
+        for kw in data.get("keywords", []):
+            text_parts.append(f"[keyword] {kw}")
+        copyright_text = "\n".join(text_parts) if text_parts else None
 
         # In SPDX 3.0, concluded_license is a property on File, not a relationship.
         # Build a LicenseField if license findings exist.

@@ -103,7 +103,7 @@ def collect_findings(scanners: list[str], dir_to_scan: str,
 
     def _ensure_entry(path):
         if path not in findings:
-            findings[path] = {"copyrights": [], "licenses": []}
+            findings[path] = {"copyrights": [], "licenses": [], "keywords": []}
 
     if 'copyright' in scanners:
         logging.info("Scanning for copyrights...")
@@ -112,15 +112,16 @@ def collect_findings(scanners: list[str], dir_to_scan: str,
             path = _normalize_path(entry.get('file', ''), dir_to_scan)
             if not path or _is_excluded(path, exclude_patterns):
                 continue
-            _ensure_entry(path)
 
             for finding in (entry.get('results') or []):
                 if finding is None:
                     continue
                 if finding.get('type') == 'statement' and finding.get('content'):
                     text = finding['content'].strip()
-                    if text and text not in findings[path]["copyrights"]:
-                        findings[path]["copyrights"].append(text)
+                    if text:
+                        _ensure_entry(path)
+                        if text not in findings[path]["copyrights"]:
+                            findings[path]["copyrights"].append(text)
 
     if 'nomos' in scanners:
         logging.info("Scanning for licenses (nomos)...")
@@ -134,7 +135,6 @@ def collect_findings(scanners: list[str], dir_to_scan: str,
             path = _normalize_path(entry.get('file', '') if isinstance(entry, dict) else '', dir_to_scan)
             if not path or _is_excluded(path, exclude_patterns):
                 continue
-            _ensure_entry(path)
 
             results = []
             if isinstance(entry, dict):
@@ -155,6 +155,7 @@ def collect_findings(scanners: list[str], dir_to_scan: str,
                 else:
                     continue
                 if lic and lic not in ('No_license_found', 'NOASSERTION', 'NONE', ''):
+                    _ensure_entry(path)
                     if lic not in findings[path]["licenses"]:
                         findings[path]["licenses"].append(lic)
                         logging.debug(f"nomos: {path} → {lic}")
@@ -166,7 +167,6 @@ def collect_findings(scanners: list[str], dir_to_scan: str,
             path = _normalize_path(entry.get('file', '') if isinstance(entry, dict) else '', dir_to_scan)
             if not path or _is_excluded(path, exclude_patterns):
                 continue
-            _ensure_entry(path)
 
             ojo_results = []
             if isinstance(entry, dict):
@@ -184,6 +184,7 @@ def collect_findings(scanners: list[str], dir_to_scan: str,
                 else:
                     continue
                 if lic and lic not in ('NOASSERTION', 'NONE', ''):
+                    _ensure_entry(path)
                     if lic not in findings[path]["licenses"]:
                         findings[path]["licenses"].append(lic)
 
@@ -194,18 +195,13 @@ def collect_findings(scanners: list[str], dir_to_scan: str,
             path = _normalize_path(entry.get('file', ''), dir_to_scan)
             if not path or _is_excluded(path, exclude_patterns):
                 continue
-            _ensure_entry(path)
             for finding in (entry.get('results') or []):
                 if finding and finding.get('content'):
-                    text = f"[keyword] {finding['content'].strip()}"
-                    if text not in findings[path]["copyrights"]:
-                        findings[path]["copyrights"].append(text)
-
-    # Remove entries with no actual findings (reduces report bloat)
-    findings = {
-        path: data for path, data in findings.items()
-        if data.get("copyrights") or data.get("licenses")
-    }
+                    text = finding['content'].strip()
+                    if text:
+                        _ensure_entry(path)
+                        if text not in findings[path]["keywords"]:
+                            findings[path]["keywords"].append(text)
 
     return findings
 
@@ -258,29 +254,27 @@ def write_text_report(findings: dict, output_dir: str,
                 data = findings[filepath]
                 copyrights = data.get("copyrights", [])
                 licenses = data.get("licenses", [])
-                if not copyrights and not licenses:
+                keywords = data.get("keywords", [])
+                if not copyrights and not licenses and not keywords:
                     continue
 
                 f.write(f"File: {filepath}\n")
                 for entry in copyrights:
-                    if entry.startswith("[keyword]"):
-                        f.write(f"  Keyword: {entry[len('[keyword] '):]}\n")
-                    else:
-                        f.write(f"  Copyright: {entry}\n")
+                    f.write(f"  Copyright: {entry}\n")
+                for kw in keywords:
+                    f.write(f"  Keyword: {kw}\n")
                 for lic in licenses:
                     f.write(f"  License: {lic}\n")
                 f.write("\n")
 
         f.write("=" * 70 + "\n")
         total_cr = sum(
-            1 for d in findings.values()
-            for c in d.get("copyrights", [])
-            if not c.startswith("[keyword]")
+            len(d.get("copyrights", []))
+            for d in findings.values()
         )
         total_kw = sum(
-            1 for d in findings.values()
-            for c in d.get("copyrights", [])
-            if c.startswith("[keyword]")
+            len(d.get("keywords", []))
+            for d in findings.values()
         )
         total_lic = sum(
             len(d.get("licenses", []))
@@ -308,10 +302,7 @@ def write_individual_reports(findings: dict, output_dir: str,
     with open(cr_path, 'w', encoding='utf-8') as f:
         has_findings = False
         for filepath in sorted(findings.keys()):
-            copyrights = [
-                c for c in findings[filepath].get("copyrights", [])
-                if not c.startswith("[keyword]")
-            ]
+            copyrights = findings[filepath].get("copyrights", [])
             if not copyrights:
                 continue
             has_findings = True
@@ -327,10 +318,7 @@ def write_individual_reports(findings: dict, output_dir: str,
     with open(kw_path, 'w', encoding='utf-8') as f:
         has_findings = False
         for filepath in sorted(findings.keys()):
-            keywords = [
-                c[len("[keyword] "):] for c in findings[filepath].get("copyrights", [])
-                if c.startswith("[keyword]")
-            ]
+            keywords = findings[filepath].get("keywords", [])
             if not keywords:
                 continue
             has_findings = True
