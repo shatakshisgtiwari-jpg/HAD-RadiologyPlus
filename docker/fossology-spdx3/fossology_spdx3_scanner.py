@@ -382,16 +382,16 @@ def main(args: argparse.Namespace) -> int:
     logging.info(f"Report format: {report_format}")
     logging.info(f"Directory: {dir_to_scan}")
 
+    output_path = args.output
+    output_dir = os.path.dirname(os.path.abspath(output_path))
+    os.makedirs(output_dir, exist_ok=True)
+
     findings = collect_findings(scanners_to_run, dir_to_scan, allowlist=allowlist,
                                 debug_dir=output_dir)
 
     cr_count = sum(len(f["copyrights"]) for f in findings.values())
     lic_count = sum(len(f.get("licenses", [])) for f in findings.values())
     logging.info(f"Collected {cr_count} copyright(s), {lic_count} license(s) across {len(findings)} file(s)")
-
-    output_path = args.output
-    output_dir = os.path.dirname(os.path.abspath(output_path))
-    os.makedirs(output_dir, exist_ok=True)
 
     # Write findings.json as a debug/audit artifact
     findings_path = os.path.join(output_dir, 'findings.json')
