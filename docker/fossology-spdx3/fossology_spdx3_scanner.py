@@ -35,13 +35,17 @@ SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'results'}
 # ─────────────────────────────────────────────────────────────
 
 def load_allowlist(path: str | None) -> dict:
-    """Load allowlist.json. Returns dict with 'licenses' and 'exclude' lists."""
+    """Load allowlist.json. Returns dict with 'licenses' and 'exclude' lists.
+    
+    When no allowlist file is provided/found, licenses is None (skip check).
+    When the file exists but licenses list is empty, it means nothing is approved.
+    """
     if not path or not os.path.isfile(path):
-        return {"licenses": [], "exclude": []}
+        return {"licenses": None, "exclude": []}
     with open(path, 'r', encoding='utf-8') as f:
         data = json.load(f)
     return {
-        "licenses": data.get("licenses", []),
+        "licenses": data.get("licenses", None),
         "exclude": data.get("exclude", []),
     }
 
@@ -296,7 +300,7 @@ def write_text_report(findings: dict, output_dir: str,
 # ─────────────────────────────────────────────────────────────
 
 def write_individual_reports(findings: dict, output_dir: str,
-                             allowlist_licenses: list[str]) -> None:
+                             allowlist_licenses: list[str] | None) -> None:
     """Write copyright.txt, license.txt, keyword.txt matching fossologyscanner format."""
 
     # ── copyright.txt ──
@@ -346,7 +350,7 @@ def write_individual_reports(findings: dict, output_dir: str,
             if not licenses:
                 continue
             for lic in licenses:
-                if allowlist_licenses and lic not in allowlist_licenses:
+                if allowlist_licenses is not None and lic not in allowlist_licenses:
                     not_allowed.append((filepath, lic))
 
         if not_allowed:
@@ -412,7 +416,7 @@ def main(args: argparse.Namespace) -> int:
     logging.info(f"TEXT report written to {text_report}")
 
     # Generate individual text files (copyright.txt, license.txt, keyword.txt)
-    write_individual_reports(findings, output_dir, allowlist.get("licenses", []))
+    write_individual_reports(findings, output_dir, allowlist.get("licenses"))
     logging.info("Individual reports written: copyright.txt, license.txt, keyword.txt")
 
     # Always generate SPDX 3.0 JSON-LD (our value-add)
