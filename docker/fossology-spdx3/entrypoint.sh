@@ -3,80 +3,80 @@
 # SPDX-FileCopyrightText: 2026 Contributors
 # SPDX-License-Identifier: MIT
 
-# ── Wrapper entrypoint ──
-# Preserves the original fossology-action interface:
-#   1. Runs /bin/fossologyscanner with ALL original args (pass-through)
-#   2. If SPDX3_JSON was requested, additionally generates SPDX 3.0 JSON-LD
+# ── Single-pipeline entrypoint ──
+# Runs FOSSology agents ONCE, collects JSON findings, and builds:
+#   1. Text report (scan_report.txt)
+#   2. SPDX 3.0 JSON-LD report
 #
-# Usage from action.yaml args:
-#   /bin/fossologyscanner copyright repo --report SPDX3_JSON ...
+# Agents are run directly (/bin/nomossa, /bin/ojo, /bin/copyright, /bin/keyword)
+# with -J flag for structured JSON output. No redundant double-scanning.
 
-# ── Step 1: Detect if SPDX3_JSON was requested ──
-SPDX3_REQUESTED=false
-MODIFIED_ARGS="$*"
+set -euo pipefail
 
-if echo "$MODIFIED_ARGS" | grep -qi "SPDX3_JSON"; then
-    SPDX3_REQUESTED=true
-    # Replace SPDX3_JSON with TEXT for fossologyscanner (it doesn't understand SPDX3)
-    MODIFIED_ARGS=$(echo "$MODIFIED_ARGS" | sed 's/SPDX3_JSON/TEXT/gi')
-    echo "[SPDX3] SPDX 3.0 JSON-LD report requested — will generate after scan"
-    echo "[SPDX3] Running fossologyscanner with TEXT format first"
-    echo ""
+SCAN_DIR="${GITHUB_WORKSPACE:-/github/workspace}"
+OUTPUT_DIR="${SCAN_DIR}/results"
+SPDX3_OUTPUT="${OUTPUT_DIR}/spdx3_report.jsonld"
+
+mkdir -p "${OUTPUT_DIR}"
+
+# ── Parse arguments to extract scanner names and allowlist ──
+ALL_ARGS="$*"
+DETECTED_SCANNERS=""
+ALLOWLIST_PATH=""
+
+for word in $ALL_ARGS; do
+    case "$word" in
+        nomos|ojo|copyright|keyword)
+            DETECTED_SCANNERS="$DETECTED_SCANNERS $word"
+            ;;
+    esac
+done
+
+# Check for allowlist file path in environment or common locations
+if [ -n "${INPUT_ALLOWLIST_FILE_PATH:-}" ]; then
+    ALLOWLIST_PATH="${SCAN_DIR}/${INPUT_ALLOWLIST_FILE_PATH}"
+elif [ -f "${SCAN_DIR}/allowlist.json" ]; then
+    ALLOWLIST_PATH="${SCAN_DIR}/allowlist.json"
 fi
 
-# ── Step 2: Run original fossologyscanner with all args ──
-# Args arrive as a single folded string starting with /bin/fossologyscanner.
-# We run it directly so the binary isn't doubled.
-$MODIFIED_ARGS || true
+DETECTED_SCANNERS=$(echo "$DETECTED_SCANNERS" | xargs)
+if [ -z "$DETECTED_SCANNERS" ]; then
+    DETECTED_SCANNERS="copyright"
+fi
+
+echo "============================================================"
+echo "  FOSSology SPDX 3.0 Pipeline"
+echo "============================================================"
+echo ""
+echo "  Scan directory: ${SCAN_DIR}"
+echo "  Scanners:       ${DETECTED_SCANNERS}"
+echo "  Allowlist:      ${ALLOWLIST_PATH:-none}"
+echo "  Output:         ${SPDX3_OUTPUT}"
+echo ""
+
+# ── Single pipeline: agents → findings → SPDX 3.0 ──
+# The Python scanner runs each agent binary once with -J (JSON output),
+# collects all findings, applies allowlist filtering, and builds the report.
+
+ALLOWLIST_ARG=""
+if [ -n "$ALLOWLIST_PATH" ] && [ -f "$ALLOWLIST_PATH" ]; then
+    ALLOWLIST_ARG="--allowlist ${ALLOWLIST_PATH}"
+fi
+
+python3 /opt/spdx3_scanner.py $DETECTED_SCANNERS \
+    --scan-dir "${SCAN_DIR}" \
+    --output "${SPDX3_OUTPUT}" \
+    $ALLOWLIST_ARG \
+    2>&1
+
 SCAN_EXIT=$?
 
 echo ""
-echo "[fossologyscanner] Scan completed (exit code: ${SCAN_EXIT})"
-
-# ── Step 3: If SPDX3 requested, generate SPDX 3.0 report ──
-if [ "$SPDX3_REQUESTED" = true ]; then
-    echo ""
-    echo "============================================================"
-    echo "  Generating SPDX 3.0 JSON-LD report..."
-    echo "============================================================"
-    echo ""
-
-    SCAN_DIR="${GITHUB_WORKSPACE:-/github/workspace}"
-    OUTPUT_DIR="${SCAN_DIR}/results"
-    SPDX3_OUTPUT="${OUTPUT_DIR}/spdx3_report.jsonld"
-
-    mkdir -p "${OUTPUT_DIR}"
-
-    # Extract scanner names from args (nomos, ojo, copyright, keyword)
-    DETECTED_SCANNERS=""
-    for word in $MODIFIED_ARGS; do
-        case "$word" in
-            nomos|ojo|copyright|keyword)
-                DETECTED_SCANNERS="$DETECTED_SCANNERS $word"
-                ;;
-        esac
-    done
-    DETECTED_SCANNERS=$(echo "$DETECTED_SCANNERS" | xargs)
-    if [ -z "$DETECTED_SCANNERS" ]; then
-        DETECTED_SCANNERS="copyright"
-    fi
-
-    echo "[SPDX3] Scanners: ${DETECTED_SCANNERS}"
-
-    # Run all detected scanners with -J (JSON) to get structured findings,
-    # then build SPDX 3.0 from those findings
-    python3 /opt/spdx3_scanner.py $DETECTED_SCANNERS \
-        --scan-dir "${SCAN_DIR}" \
-        --output "${SPDX3_OUTPUT}" \
-        2>&1
-
-    echo ""
-    if [ -f "${SPDX3_OUTPUT}" ]; then
-        echo "[SPDX3] Report written: ${SPDX3_OUTPUT}"
-        echo "[SPDX3] Size: $(wc -c < "${SPDX3_OUTPUT}") bytes"
-    else
-        echo "[SPDX3] WARNING: SPDX 3.0 report was not generated"
-    fi
+if [ -f "${SPDX3_OUTPUT}" ]; then
+    echo "[SPDX3] Report written: ${SPDX3_OUTPUT}"
+    echo "[SPDX3] Size: $(wc -c < "${SPDX3_OUTPUT}") bytes"
+else
+    echo "[SPDX3] WARNING: SPDX 3.0 report was not generated"
 fi
 
 echo ""

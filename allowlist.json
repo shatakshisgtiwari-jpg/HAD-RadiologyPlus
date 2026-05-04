@@ -3,13 +3,17 @@
     "MIT",
     "Apache-2.0",
     "GPL",
-    "GPL-2.0",
-    "GPL-3.0",
+    "GPL-2.0-only",
+    "GPL-2.0-or-later",
+    "GPL-3.0-only",
+    "GPL-3.0-or-later",
     "CC0-1.0"
   ],
   "exclude": [
     ".git/**",
     "node_modules/**",
-    "__pycache__/**"
+    "__pycache__/**",
+    "results/**",
+    "allowlist.json"
   ]
 }

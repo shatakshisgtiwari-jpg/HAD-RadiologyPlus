@@ -6,6 +6,7 @@
 """FOSSology SPDX 3.0 Scanner."""
 
 import argparse
+import fnmatch
 import json
 import logging
 import multiprocessing
@@ -26,7 +27,31 @@ SCANNERS = {
     'ojo': '/bin/ojo',
 }
 
-SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '.venv', 'venv'}
+SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'results'}
+
+
+# ─────────────────────────────────────────────────────────────
+# Allowlist support
+# ─────────────────────────────────────────────────────────────
+
+def load_allowlist(path: str | None) -> dict:
+    """Load allowlist.json. Returns dict with 'licenses' and 'exclude' lists."""
+    if not path or not os.path.isfile(path):
+        return {"licenses": [], "exclude": []}
+    with open(path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    return {
+        "licenses": data.get("licenses", []),
+        "exclude": data.get("exclude", []),
+    }
+
+
+def _is_excluded(path: str, exclude_patterns: list[str]) -> bool:
+    """Check if a relative path matches any exclude glob pattern."""
+    for pattern in exclude_patterns:
+        if fnmatch.fnmatch(path, pattern):
+            return True
+    return False
 
 
 # ─────────────────────────────────────────────────────────────
@@ -59,8 +84,10 @@ def run_scanner(scanner_path: str, dir_to_scan: str,
 # Collect findings from scanner JSON output
 # ─────────────────────────────────────────────────────────────
 
-def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
+def collect_findings(scanners: list[str], dir_to_scan: str,
+                     allowlist: dict | None = None) -> dict:
     findings: dict[str, dict] = {}
+    exclude_patterns = (allowlist or {}).get("exclude", [])
 
     def _ensure_entry(path):
         if path not in findings:
@@ -71,7 +98,7 @@ def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
         raw = run_scanner(SCANNERS['copyright'], dir_to_scan)
         for entry in _get_results_list(raw):
             path = _normalize_path(entry.get('file', ''), dir_to_scan)
-            if not path:
+            if not path or _is_excluded(path, exclude_patterns):
                 continue
             _ensure_entry(path)
 
@@ -89,7 +116,7 @@ def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
         raw = run_scanner(SCANNERS['nomos'], dir_to_scan, extra_args=nomos_extra)
         for entry in _get_results_list(raw):
             path = _normalize_path(entry.get('file', ''), dir_to_scan)
-            if not path:
+            if not path or _is_excluded(path, exclude_patterns):
                 continue
             _ensure_entry(path)
 
@@ -106,7 +133,7 @@ def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
         raw = run_scanner(SCANNERS['ojo'], dir_to_scan)
         for entry in _get_results_list(raw):
             path = _normalize_path(entry.get('file', ''), dir_to_scan)
-            if not path:
+            if not path or _is_excluded(path, exclude_patterns):
                 continue
             _ensure_entry(path)
 
@@ -123,7 +150,7 @@ def collect_findings(scanners: list[str], dir_to_scan: str) -> dict:
         raw = run_scanner(SCANNERS['keyword'], dir_to_scan)
         for entry in _get_results_list(raw):
             path = _normalize_path(entry.get('file', ''), dir_to_scan)
-            if not path:
+            if not path or _is_excluded(path, exclude_patterns):
                 continue
             _ensure_entry(path)
             for finding in (entry.get('results') or []):
@@ -244,11 +271,16 @@ def main(args: argparse.Namespace) -> int:
 
     report_format = (args.report or 'TEXT').upper()
 
+    # Load allowlist for path exclusion and license checking
+    allowlist = load_allowlist(args.allowlist)
+    if allowlist.get("licenses"):
+        logging.info(f"Allowlist: {len(allowlist['licenses'])} allowed licenses, {len(allowlist['exclude'])} exclude patterns")
+
     logging.info(f"Scanners: {', '.join(scanners_to_run)}")
     logging.info(f"Report format: {report_format}")
     logging.info(f"Directory: {dir_to_scan}")
 
-    findings = collect_findings(scanners_to_run, dir_to_scan)
+    findings = collect_findings(scanners_to_run, dir_to_scan, allowlist=allowlist)
 
     cr_count = sum(len(f["copyrights"]) for f in findings.values())
     lic_count = sum(len(f.get("licenses", [])) for f in findings.values())
@@ -303,6 +335,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output", type=str, default="results/spdx3_report.jsonld",
         help="Output path for SPDX 3.0 JSON-LD (default: results/spdx3_report.jsonld)",
+    )
+
+    parser.add_argument(
+        "--allowlist", type=str, default=None,
+        help="Path to allowlist.json for excluding paths and checking licenses",
     )
 
     parsed = parser.parse_args()
