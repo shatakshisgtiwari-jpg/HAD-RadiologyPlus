@@ -132,10 +132,13 @@ def collect_findings(scanners: list[str], dir_to_scan: str,
                 continue
             _ensure_entry(path)
 
-            results = entry.get('results', []) if isinstance(entry, dict) else []
-            # nomos may also put license at top-level of entry
-            if not results and isinstance(entry, dict) and entry.get('license'):
-                results = [entry]
+            results = []
+            if isinstance(entry, dict):
+                # nomos uses "licenses" (plural, array of dicts)
+                # ojo/others may use "results" (array) or "license" (single string)
+                results = entry.get('licenses') or entry.get('results') or []
+                if not results and entry.get('license'):
+                    results = [entry]
 
             for finding in results:
                 if finding is None:
@@ -161,7 +164,13 @@ def collect_findings(scanners: list[str], dir_to_scan: str,
                 continue
             _ensure_entry(path)
 
-            for finding in (entry.get('results') or []) if isinstance(entry, dict) else []:
+            ojo_results = []
+            if isinstance(entry, dict):
+                ojo_results = entry.get('licenses') or entry.get('results') or []
+                if not ojo_results and entry.get('license'):
+                    ojo_results = [entry]
+
+            for finding in ojo_results:
                 if finding is None:
                     continue
                 if isinstance(finding, str):
@@ -172,7 +181,6 @@ def collect_findings(scanners: list[str], dir_to_scan: str,
                     continue
                 if lic and lic not in ('NOASSERTION', 'NONE', ''):
                     if lic not in findings[path]["licenses"]:
-                        findings[path]["licenses"].append(lic)
                         findings[path]["licenses"].append(lic)
 
     if 'keyword' in scanners:
