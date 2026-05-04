@@ -77,7 +77,14 @@ def run_scanner(scanner_path: str, dir_to_scan: str,
     if not stdout.strip():
         return {}
 
-    return json.loads(stdout.strip())
+    try:
+        parsed = json.loads(stdout.strip())
+    except json.JSONDecodeError as e:
+        logging.error(f"Failed to parse JSON from {scanner_path}: {e}")
+        logging.error(f"Raw output (first 500 chars): {stdout.strip()[:500]}")
+        return {}
+
+    return parsed
 
 
 # ─────────────────────────────────────────────────────────────
@@ -85,7 +92,8 @@ def run_scanner(scanner_path: str, dir_to_scan: str,
 # ─────────────────────────────────────────────────────────────
 
 def collect_findings(scanners: list[str], dir_to_scan: str,
-                     allowlist: dict | None = None) -> dict:
+                     allowlist: dict | None = None,
+                     debug_dir: str | None = None) -> dict:
     findings: dict[str, dict] = {}
     exclude_patterns = (allowlist or {}).get("exclude", [])
 
@@ -114,35 +122,57 @@ def collect_findings(scanners: list[str], dir_to_scan: str,
         logging.info("Scanning for licenses (nomos)...")
         nomos_extra = ["-S", "-l", "-n", str(max(1, multiprocessing.cpu_count() - 1))]
         raw = run_scanner(SCANNERS['nomos'], dir_to_scan, extra_args=nomos_extra)
+        if debug_dir:
+            with open(os.path.join(debug_dir, 'debug_nomos_raw.json'), 'w', encoding='utf-8') as dbg:
+                json.dump(raw, dbg, indent=2, ensure_ascii=False)
+        logging.info(f"nomos raw result type: {type(raw).__name__}, entries: {len(_get_results_list(raw))}")
         for entry in _get_results_list(raw):
-            path = _normalize_path(entry.get('file', ''), dir_to_scan)
+            path = _normalize_path(entry.get('file', '') if isinstance(entry, dict) else '', dir_to_scan)
             if not path or _is_excluded(path, exclude_patterns):
                 continue
             _ensure_entry(path)
 
-            for finding in (entry.get('results') or []):
+            results = entry.get('results', []) if isinstance(entry, dict) else []
+            # nomos may also put license at top-level of entry
+            if not results and isinstance(entry, dict) and entry.get('license'):
+                results = [entry]
+
+            for finding in results:
                 if finding is None:
                     continue
-                lic = (finding.get('license') or '').strip()
+                # Handle both formats: dict {"license": "MIT"} and plain string "MIT"
+                if isinstance(finding, str):
+                    lic = finding.strip()
+                elif isinstance(finding, dict):
+                    lic = (finding.get('license') or finding.get('License') or '').strip()
+                else:
+                    continue
                 if lic and lic not in ('No_license_found', 'NOASSERTION', 'NONE', ''):
                     if lic not in findings[path]["licenses"]:
                         findings[path]["licenses"].append(lic)
+                        logging.debug(f"nomos: {path} → {lic}")
 
     if 'ojo' in scanners:
         logging.info("Scanning for license references (ojo)...")
         raw = run_scanner(SCANNERS['ojo'], dir_to_scan)
         for entry in _get_results_list(raw):
-            path = _normalize_path(entry.get('file', ''), dir_to_scan)
+            path = _normalize_path(entry.get('file', '') if isinstance(entry, dict) else '', dir_to_scan)
             if not path or _is_excluded(path, exclude_patterns):
                 continue
             _ensure_entry(path)
 
-            for finding in (entry.get('results') or []):
+            for finding in (entry.get('results') or []) if isinstance(entry, dict) else []:
                 if finding is None:
                     continue
-                lic = (finding.get('license') or '').strip()
+                if isinstance(finding, str):
+                    lic = finding.strip()
+                elif isinstance(finding, dict):
+                    lic = (finding.get('license') or finding.get('License') or '').strip()
+                else:
+                    continue
                 if lic and lic not in ('NOASSERTION', 'NONE', ''):
                     if lic not in findings[path]["licenses"]:
+                        findings[path]["licenses"].append(lic)
                         findings[path]["licenses"].append(lic)
 
     if 'keyword' in scanners:
@@ -254,6 +284,78 @@ def write_text_report(findings: dict, output_dir: str,
 
 
 # ─────────────────────────────────────────────────────────────
+# Individual text reports (matches fossologyscanner output)
+# ─────────────────────────────────────────────────────────────
+
+def write_individual_reports(findings: dict, output_dir: str,
+                             allowlist_licenses: list[str]) -> None:
+    """Write copyright.txt, license.txt, keyword.txt matching fossologyscanner format."""
+
+    # ── copyright.txt ──
+    cr_path = os.path.join(output_dir, 'copyright.txt')
+    with open(cr_path, 'w', encoding='utf-8') as f:
+        has_findings = False
+        for filepath in sorted(findings.keys()):
+            copyrights = [
+                c for c in findings[filepath].get("copyrights", [])
+                if not c.startswith("[keyword]")
+            ]
+            if not copyrights:
+                continue
+            has_findings = True
+            f.write(f"File: {filepath}\nCopyrights:\n")
+            for c in copyrights:
+                f.write(f"\t{c}\n")
+            f.write("\n")
+        if not has_findings:
+            f.write("No copyrights found.\n")
+
+    # ── keyword.txt ──
+    kw_path = os.path.join(output_dir, 'keyword.txt')
+    with open(kw_path, 'w', encoding='utf-8') as f:
+        has_findings = False
+        for filepath in sorted(findings.keys()):
+            keywords = [
+                c[len("[keyword] "):] for c in findings[filepath].get("copyrights", [])
+                if c.startswith("[keyword]")
+            ]
+            if not keywords:
+                continue
+            has_findings = True
+            f.write(f"File: {filepath}\nKeywords:\n")
+            for kw in keywords:
+                f.write(f"\t{kw}\n")
+            f.write("\n")
+        if not has_findings:
+            f.write("No keywords found.\n")
+
+    # ── license.txt ──
+    lic_path = os.path.join(output_dir, 'license.txt')
+    with open(lic_path, 'w', encoding='utf-8') as f:
+        not_allowed = []
+        for filepath in sorted(findings.keys()):
+            licenses = findings[filepath].get("licenses", [])
+            if not licenses:
+                continue
+            for lic in licenses:
+                if allowlist_licenses and lic not in allowlist_licenses:
+                    not_allowed.append((filepath, lic))
+
+        if not_allowed:
+            f.write("Following licenses found which are not allow listed:\n")
+            # Group by file
+            current_file = None
+            for filepath, lic in not_allowed:
+                if filepath != current_file:
+                    current_file = filepath
+                    f.write(f"File: {filepath}\nLicense:\n")
+                f.write(f"\t{lic}\n")
+            f.write("\n")
+        else:
+            f.write("No license violations found.\n")
+
+
+# ─────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────
 
@@ -280,7 +382,8 @@ def main(args: argparse.Namespace) -> int:
     logging.info(f"Report format: {report_format}")
     logging.info(f"Directory: {dir_to_scan}")
 
-    findings = collect_findings(scanners_to_run, dir_to_scan, allowlist=allowlist)
+    findings = collect_findings(scanners_to_run, dir_to_scan, allowlist=allowlist,
+                                debug_dir=output_dir)
 
     cr_count = sum(len(f["copyrights"]) for f in findings.values())
     lic_count = sum(len(f.get("licenses", [])) for f in findings.values())
@@ -299,6 +402,10 @@ def main(args: argparse.Namespace) -> int:
     # Generate TEXT report (matches fossology-action output)
     text_report = write_text_report(findings, output_dir, scanners_to_run)
     logging.info(f"TEXT report written to {text_report}")
+
+    # Generate individual text files (copyright.txt, license.txt, keyword.txt)
+    write_individual_reports(findings, output_dir, allowlist.get("licenses", []))
+    logging.info("Individual reports written: copyright.txt, license.txt, keyword.txt")
 
     # Always generate SPDX 3.0 JSON-LD (our value-add)
     spdx3_builder.build(
