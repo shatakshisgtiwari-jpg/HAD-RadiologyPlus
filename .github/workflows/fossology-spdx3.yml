@@ -5,57 +5,15 @@ on:
     branches: [main]
   workflow_dispatch:
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: fossology-spdx3
+# [SPDX3-ADDITION] Removed REGISTRY/IMAGE_NAME env vars and build-image job.
+# The scanner image is now built and pushed by fossology-fork CI
+# (ghcr.io/shatakshisgtiwari-jpg/fossology-scanner:latest).
+# fossology-action-fork references that image directly.
 
 jobs:
-  # ── Job 1: Build & push custom scanner image (skips if unchanged) ──
-  build-image:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-
-      - name: Check if image files changed
-        id: changes
-        run: |
-          if git diff --name-only HEAD~1 HEAD | grep -q '^docker/fossology-spdx3/'; then
-            echo "image_changed=true" >> $GITHUB_OUTPUT
-          else
-            echo "image_changed=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Log in to GHCR
-        if: steps.changes.outputs.image_changed == 'true'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push image
-        if: steps.changes.outputs.image_changed == 'true'
-        uses: docker/build-push-action@v5
-        with:
-          context: docker/fossology-spdx3
-          push: true
-          tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest
-
-      - name: Skip build (no image changes)
-        if: steps.changes.outputs.image_changed == 'false'
-        run: echo "No changes to docker/fossology-spdx3/ — skipping image build"
-
-  # ── Job 2: Scan repo → Generate SPDX 3.0 report → Archive ──
+  # ── Scan repo → Generate SPDX 3.0 report → Archive ──
   scan-and-report:
     runs-on: ubuntu-latest
-    needs: build-image
     name: FOSSology Scan + SPDX 3.0 Report
     permissions:
       contents: read
@@ -64,7 +22,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Pulls custom image → scans in repo mode → generates SPDX 3.0 JSON-LD
+      # [SPDX3-ADDITION] Image is pulled from fossology-fork's GHCR by the action
       - name: Run FOSSology scan + SPDX 3.0 report
         uses: shatakshisgtiwari-jpg/fossology-action@main
         with:
