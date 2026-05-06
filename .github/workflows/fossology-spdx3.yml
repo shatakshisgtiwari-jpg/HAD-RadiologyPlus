@@ -5,10 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# [SPDX3-ADDITION] Removed REGISTRY/IMAGE_NAME env vars and build-image job.
-# The scanner image is now built and pushed by fossology-fork CI
-# (ghcr.io/shatakshisgtiwari-jpg/fossology-scanner:latest).
-# fossology-action-fork references that image directly.
+# [SPDX3-ADDITION] The scanner image (ghcr.io/shatakshisgtiwari-jpg/fossology-spdx3:latest)
+# is built and pushed by fossology-fork CI (docker-build.yml / release-publish.yml).
+# fossology-action-fork (shatakshisgtiwari-jpg/fossology-action) references that
+# image directly via its action.yaml — no image build is needed in this repo.
 
 jobs:
   # ── Scan repo → Generate SPDX 3.0 report → Archive ──
@@ -22,7 +22,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # [SPDX3-ADDITION] Image is pulled from fossology-fork's GHCR by the action
+      # [SPDX3-ADDITION] fossology-action-fork pulls the fossology-spdx3 image
+      # from fossology-fork's GHCR, runs all scanners and generates SPDX 3.0 report.
       - name: Run FOSSology scan + SPDX 3.0 report
         uses: shatakshisgtiwari-jpg/fossology-action@main
         with:

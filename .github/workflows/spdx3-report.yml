@@ -14,13 +14,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Pulls custom image → scans in repo mode → generates SPDX 3.0 JSON-LD
+      # [SPDX3-ADDITION] fossology-action-fork pulls fossology-spdx3 image from
+      # fossology-fork GHCR, runs scanners and generates SPDX 3.0 JSON-LD report.
       - name: Run FOSSology scan + SPDX 3.0 report
         uses: shatakshisgtiwari-jpg/fossology-action@main
         with:
           scan_mode: 'repo'
-          scanners: 'copyright'
-          report_format: 'SPDX_JSON'
+          scanners: 'nomos ojo copyright keyword'
+          report_format: 'SPDX3_JSON'
           allowlist_file_path: 'allowlist.json'
 
       - name: Fix result permissions
