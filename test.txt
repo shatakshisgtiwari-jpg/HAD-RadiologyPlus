@@ -1,4 +1,4 @@
 testing for turtle built direct.
 added expanded licensing.
 test for see also
-validator added 
+validator added for all the formats 
