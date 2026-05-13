@@ -6,3 +6,4 @@ official validator added
 imports added
 redundant calls for 2 versions removed 
 validation parsing done 
+validation fixes
