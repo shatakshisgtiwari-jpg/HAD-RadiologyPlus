@@ -8,3 +8,4 @@ redundant calls for 2 versions removed
 validation parsing done 
 validation fixes
 check: scanner name updated 
+rdf check
