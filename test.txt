@@ -1,5 +1,5 @@
-This software is provided under the Beerware License.
-As long as you retain this notice you can do whatever you want with this stuff.
+//This software is provided under the Beerware License.
+//As long as you retain this notice you can do whatever you want with this stuff.
 
 testing for turtle built direct.
 added expanded licensing.
