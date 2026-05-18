@@ -12,3 +12,6 @@ rdf check
 enum added
 format fixes
 licenseText tested 
+
+// SPDX-License-Identifier: Proprietary-License
+// This file is licensed under a proprietary license.
