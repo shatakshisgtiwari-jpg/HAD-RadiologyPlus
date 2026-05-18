@@ -1,7 +1,7 @@
 # // SPDX-License-Identifier: LicenseRef-MyCustom
 # // Copyright 2026 Test Author
 # // This file tests custom license handling.
-
+SPDX-License-Identifier: mycustom 
 # testing for turtle built direct.
 # added expanded licensing.
 # test for see also
