@@ -1,5 +1,7 @@
-//This software is provided under the Beerware License.
-//As long as you retain this notice you can do whatever you want with this stuff.
+// SPDX-License-Identifier: MyCustomLicense-1.0
+// Copyright 2026 Test Author
+// This file tests custom license handling.
+
 
 testing for turtle built direct.
 added expanded licensing.
