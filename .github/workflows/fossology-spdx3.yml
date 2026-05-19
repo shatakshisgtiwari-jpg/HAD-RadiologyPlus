@@ -26,7 +26,8 @@ jobs:
       # from fossology-fork's GHCR, runs all scanners and generates SPDX 3.0 report.
       - name: Run FOSSology scan + SPDX 3.0 report
         #uses: shatakshisgtiwari-jpg/fossology-action@main
-        uses: fossology/fossology-action@main
+        #uses: fossology/fossology-action@main
+        uses: fossology/fossology-action@v1
         with:
           scan_mode: 'repo'
           scanners: 'nomos ojo copyright keyword'
