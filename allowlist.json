@@ -2,9 +2,7 @@
   "licenses": [
     "MIT",
     "Apache-2.0",
-    "GPL",
-    "No_license_found",
-    "NOASSERTION"
+    "GPL"
   ],
   "exclude": [
     "*.png",
