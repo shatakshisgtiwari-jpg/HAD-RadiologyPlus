@@ -30,7 +30,7 @@ jobs:
         with:
           scan_mode: 'repo'
           scanners: 'nomos ojo copyright keyword'
-          report_format: 'SPDX3_TTL'
+          report_format: 'SPDX_TAG_VALUE'
           allowlist_file_path: 'allowlist.json'
 
       - name: Fix result permissions
