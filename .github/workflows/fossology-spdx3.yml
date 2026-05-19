@@ -25,9 +25,8 @@ jobs:
       # [SPDX3-ADDITION] fossology-action-fork pulls the fossology-spdx3 image
       # from fossology-fork's GHCR, runs all scanners and generates SPDX 3.0 report.
       - name: Run FOSSology scan + SPDX 3.0 report
-        #uses: shatakshisgtiwari-jpg/fossology-action@main
-        #uses: fossology/fossology-action@main
-        uses: fossology/fossology-action@v1
+        uses: shatakshisgtiwari-jpg/fossology-action@main
+       
         with:
           scan_mode: 'repo'
           scanners: 'nomos ojo copyright keyword'
