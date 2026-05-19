@@ -33,10 +33,6 @@ jobs:
           report_format: 'SPDX3_RDF'
           allowlist_file_path: 'allowlist.json'
 
-      - name: Fix result permissions
-        if: always()
-        run: sudo chmod -R a+rw results/ 2>/dev/null || true
-
       - name: Upload SPDX 3.0 report
         if: always()
         uses: actions/upload-artifact@v4
