@@ -30,7 +30,7 @@ jobs:
         with:
           scan_mode: 'repo'
           scanners: 'nomos ojo copyright keyword'
-          report_format: 'SPDX3_RDF'
+          report_format: 'SPDX3_TTL'
           allowlist_file_path: 'allowlist.json'
 
       - name: Upload SPDX 3.0 report
