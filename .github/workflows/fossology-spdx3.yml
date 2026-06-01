@@ -68,4 +68,3 @@ jobs:
           name: Fossology scan results
           path: results/
 
-#test test
