@@ -22,7 +22,7 @@ jobs:
         uses: shatakshisgtiwari-jpg/fossology-action@main
         with:
           scan_mode: "repo-scan"
-          scanners: "nomos ojo copyright keyword"
+          scanners: "nomos,ojo,copyright,keyword"
           report_format: "SPDX_JSON"
           dashboard: true
           dashboard_charts: true
