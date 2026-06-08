@@ -1,10 +1,7 @@
-
-
 name: Software Composition Analysis
 
 on:
   push:
-
 
 permissions:
   contents: read
@@ -21,9 +18,9 @@ jobs:
         id: fossology
         uses: shatakshisgtiwari-jpg/fossology-action@main
         with:
-          scan_mode: "repo-scan"
-          scanners: "nomos ojo copyright "
-          report_format: "SPDX_JSON"
+          scan_mode: "repo"
+          scanners: "nomos ojo copyright"
+          report_format: "SPDX3_JSON"
           dashboard: true
           dashboard_charts: true
           dashboard_risk: true
@@ -35,4 +32,3 @@ jobs:
         with:
           name: Fossology scan results
           path: results/
-
