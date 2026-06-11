@@ -33,4 +33,3 @@ jobs:
           name: Fossology scan results
           path: results/
 
-#dashboard: true
