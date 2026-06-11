@@ -33,3 +33,4 @@ jobs:
           name: Fossology scan results
           path: results/
 
+# For more information on the FOSSology GitHub Action, please refer to the documentation:
