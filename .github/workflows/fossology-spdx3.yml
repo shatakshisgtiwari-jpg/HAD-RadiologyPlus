@@ -34,8 +34,6 @@
 #           path: results/
 
 
-
-
 name: Software Composition Analysis
 
 on:
