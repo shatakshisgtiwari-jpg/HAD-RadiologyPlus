@@ -154,7 +154,7 @@ jobs:
       # Step 1: Run FOSSology scan (original working action)
       - name: Run FOSSology analysis
         id: fossology
-        uses: shatakshisgtiwari-jpg/fossology-action@af98a7956d4bce86e8b3892f506bc5ff4019e004
+        uses: shatakshisgtiwari-jpg/fossology-action@main
         with:
           scan_mode: "scan-only-deps"
           scanners: "ojo copyright"
