@@ -151,18 +151,27 @@ jobs:
         with:
           name: sbom
 
-      - name: Run FOSSology analysis with per-dependency reports
+      # Step 1: Run FOSSology scan (original working action)
+      - name: Run FOSSology analysis
         id: fossology
-        uses: shatakshisgtiwari-jpg/fossology-action@2e919d8a067daeaa54ea25cfc99117953cc7b1a9
+        uses: shatakshisgtiwari-jpg/fossology-action@af98a7956d4bce86e8b3892f506bc5ff4019e004
         with:
           scan_mode: "scan-only-deps"
           scanners: "ojo copyright"
           report_format: "SPDX_JSON"
           sbom_path: "sbom.json"
-          per_dependency_report: "true"
-          per_dependency_report_dir: "per-dependency-reports"
 
-      - name: Upload Consolidated Scan Results
+      # Step 2: Generate per-dependency reports (separate step)
+      - name: Generate Per-Dependency Reports
+        run: |
+          bash scripts/generate-per-dependency-reports.sh
+        env:
+          REPORT_FORMAT: "SPDX_JSON"
+          SBOM_PATH: "sbom.json"
+          PER_DEPENDENCY_REPORT_DIR: "per-dependency-reports"
+
+      # Step 3: Upload artifacts
+      - name: Upload Consolidated Report
         if: success() || failure()
         uses: actions/upload-artifact@v4.6.2
         with:
@@ -175,6 +184,5 @@ jobs:
         with:
           name: Fossology-per-dependency-reports
           path: per-dependency-reports/
-
 
 
