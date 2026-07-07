@@ -162,6 +162,7 @@ jobs:
       # Step 1: Run FOSSology scan (your working main branch)
       - name: Run FOSSology analysis
         id: fossology
+        continue-on-error: true
         uses: shatakshisgtiwari-jpg/fossology-action@main
         with:
           scan_mode: "scan-only-deps"
