@@ -153,7 +153,7 @@ jobs:
 
       - name: Run FOSSology analysis with per-dependency reports
         id: fossology
-        uses: shatakshisgtiwari-jpg/fossology-action@f670c7d31b184fd3e9826102b6b50c4c9fd6471d
+        uses: shatakshisgtiwari-jpg/fossology-action@2e919d8a067daeaa54ea25cfc99117953cc7b1a9
         with:
           scan_mode: "scan-only-deps"
           scanners: "ojo copyright"
