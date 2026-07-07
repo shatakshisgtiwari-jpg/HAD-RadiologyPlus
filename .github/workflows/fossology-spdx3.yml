@@ -101,8 +101,6 @@
 #           name: Fossology scan results
 #           path: results/
 
-
-
 name: Software Composition Analysis
 
 on:
