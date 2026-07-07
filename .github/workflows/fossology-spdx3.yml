@@ -151,7 +151,15 @@ jobs:
         with:
           name: sbom
 
-      # Step 1: Run FOSSology scan (original working action)
+      # Checkout fork to get the per-dependency script
+      - name: Checkout Fork for Scripts
+        uses: actions/checkout@v4
+        with:
+          repository: shatakshisgtiwari-jpg/fossology-action
+          ref: feat/action/per-dependency-report
+          path: fossology-action-fork
+
+      # Step 1: Run FOSSology scan (your working main branch)
       - name: Run FOSSology analysis
         id: fossology
         uses: shatakshisgtiwari-jpg/fossology-action@main
@@ -161,10 +169,10 @@ jobs:
           report_format: "SPDX_JSON"
           sbom_path: "sbom.json"
 
-      # Step 2: Generate per-dependency reports (separate step)
+      # Step 2: Generate per-dependency reports
       - name: Generate Per-Dependency Reports
         run: |
-          bash scripts/generate-per-dependency-reports.sh
+          bash fossology-action-fork/scripts/generate-per-dependency-reports.sh
         env:
           REPORT_FORMAT: "SPDX_JSON"
           SBOM_PATH: "sbom.json"
@@ -184,5 +192,3 @@ jobs:
         with:
           name: Fossology-per-dependency-reports
           path: per-dependency-reports/
-
-
