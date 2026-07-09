@@ -293,7 +293,7 @@ jobs:
       - name: Checkout CapyCLI fork
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository_owner }}/capycli-fork
+          repository: ${{ github.repository_owner }}/capycli
           ref: feat/sw360/upload_reports
           path: ${{ env.CAPYCLI_DIR }}
 
