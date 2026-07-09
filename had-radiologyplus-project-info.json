@@ -1,0 +1,12 @@
+{
+  "name": "had-radiologyplus",
+  "version": "1.0.0",
+  "description": "HAD RadiologyPlus project - Software Composition Analysis",
+  "projectType": "PRODUCT",
+  "visibility": "EVERYONE",
+  "businessUnit": "HAD",
+  "projectOwner": "setup@sw360.org",
+  "projectResponsible": "setup@sw360.org",
+  "securityResponsibles": ["setup@sw360.org"],
+  "tag": "had-radiologyplus"
+}
