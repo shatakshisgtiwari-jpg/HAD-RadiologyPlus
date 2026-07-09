@@ -244,11 +244,11 @@ jobs:
           }
           Write-Host "Maven version:"
           mvn -version
-        shell: pwsh
+        shell: powershell
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Install cdxgen
         run: npm install -g @cyclonedx/cdxgen
@@ -263,7 +263,7 @@ jobs:
             exit 1
           }
           Write-Host "sbom.json created successfully"
-        shell: pwsh
+        shell: powershell
 
       - uses: actions/upload-artifact@v4
         with:
@@ -294,6 +294,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/capycli-fork
+          ref: feat/sw360/upload_reports
           path: ${{ env.CAPYCLI_DIR }}
 
       # ── Checkout Fossology fork for per-dep script ─────────
@@ -312,7 +313,7 @@ jobs:
       - name: Install CapyCLI
         run: |
           pip install -e ${{ env.CAPYCLI_DIR }}
-        shell: pwsh
+        shell: powershell
 
       # ── Step 2: Map SBOM to SW360 ─────────────────────────
       - name: "Step 2 · Map SBOM to SW360"
@@ -326,7 +327,7 @@ jobs:
             --matchmode full-search,all-versions `
             -v
         working-directory: ${{ env.CAPYCLI_DIR }}
-        shell: pwsh
+        shell: powershell
         env:
           PYTHONPATH: ${{ env.CAPYCLI_DIR }}
 
@@ -338,7 +339,7 @@ jobs:
           }
           Write-Host "mapped-sbom.json created successfully"
         working-directory: ${{ env.CAPYCLI_DIR }}
-        shell: pwsh
+        shell: powershell
 
       # ── Step 3a: Create missing components ────────────────
       - name: "Step 3a · Create missing components on SW360"
@@ -351,7 +352,7 @@ jobs:
             --download `
             -v
         working-directory: ${{ env.CAPYCLI_DIR }}
-        shell: pwsh
+        shell: powershell
 
       # ── Step 3b: Create missing releases ──────────────────
       - name: "Step 3b · Create missing releases on SW360"
@@ -364,7 +365,7 @@ jobs:
             --download `
             -v
         working-directory: ${{ env.CAPYCLI_DIR }}
-        shell: pwsh
+        shell: powershell
 
       # ── Step 4: Create / update project ───────────────────
       - name: "Step 4 · Create / update SW360 project"
@@ -378,7 +379,7 @@ jobs:
             -source had-radiologyplus-project-info.json `
             -v
         working-directory: ${{ env.CAPYCLI_DIR }}
-        shell: pwsh
+        shell: powershell
 
       # ── Capture project ID ─────────────────────────────────
       - name: "Capture SW360 project ID"
@@ -398,7 +399,7 @@ jobs:
             Write-Host "WARNING: Could not auto-detect project ID"
           }
         working-directory: ${{ env.CAPYCLI_DIR }}
-        shell: pwsh
+        shell: powershell
 
       # ── Step 5: Download sources ───────────────────────────
       - name: "Step 5 · Download dependency sources"
@@ -412,7 +413,7 @@ jobs:
             -o sourced-sbom.json `
             -v
         working-directory: ${{ env.CAPYCLI_DIR }}
-        shell: pwsh
+        shell: powershell
 
       # ── Step 6: Fossology scan → per-dep reports ──────────
       - name: "Step 6 · Run FOSSology analysis"
@@ -431,7 +432,7 @@ jobs:
             New-Item -ItemType Directory -Path ${{ env.REPORT_DIR }} | Out-Null
           }
           bash fossology-action-fork/scripts/generate-per-dependency-reports.sh
-        shell: pwsh
+        shell: powershell
         env:
           REPORT_FORMAT: "SPDX_JSON"
           SBOM_PATH: "${{ env.CAPYCLI_DIR }}/created-sbom.json"
@@ -448,7 +449,7 @@ jobs:
             -source ${{ env.SOURCE_DIR }} `
             -v
         working-directory: ${{ env.CAPYCLI_DIR }}
-        shell: pwsh
+        shell: powershell
 
       # ── Step 8: Upload per-dep scan reports ───────────────
       - name: "Step 8 · Upload per-dependency scan reports to SW360"
@@ -471,7 +472,7 @@ jobs:
             Write-Host "WARNING: No .spdx.json reports found - skipping upload."
           }
         working-directory: ${{ env.CAPYCLI_DIR }}
-        shell: pwsh
+        shell: powershell
 
       # ── Step 9: Validate ───────────────────────────────────
       - name: "Step 9 · Validate pipeline completeness"
@@ -493,7 +494,7 @@ jobs:
             --forceerror `
             -v
         working-directory: ${{ env.CAPYCLI_DIR }}
-        shell: pwsh
+        shell: powershell
 
       # ── Upload all artifacts ────────────────────────────────
       - name: Upload SBOM artifacts
