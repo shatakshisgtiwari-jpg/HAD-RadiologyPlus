@@ -101,37 +101,146 @@
 #           name: Fossology scan results
 #           path: results/
 
-name: Software Composition Analysis
+# name: Software Composition Analysis
+
+# on:
+#   push:
+
+# permissions:
+#   contents: read
+#   actions: write
+
+# jobs:
+#   sbom:
+#     runs-on: ubuntu-latest
+
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
+
+#       - uses: actions/setup-java@v4
+#         with:
+#           distribution: 'temurin'
+#           java-version: '21'
+
+#       - uses: actions/setup-node@v4
+#         with:
+#           node-version: '20'
+
+#       - name: Install cdxgen
+#         run: npm install -g @cyclonedx/cdxgen
+
+#       - name: Generate CDX SBOM
+#         run: cdxgen -r -o sbom.json --spec-version 1.6 --format json
+
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: sbom
+#           path: sbom.json
+#           if-no-files-found: error
+
+#   sca:
+#     runs-on: ubuntu-latest
+#     needs: sbom
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
+
+#       - name: Download SBOM
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: sbom
+
+#       # Checkout fork to get the per-dependency script
+#       - name: Checkout Fork for Scripts
+#         uses: actions/checkout@v4
+#         with:
+#           repository: shatakshisgtiwari-jpg/fossology-action
+#           ref: feat/action/per-dependency-report
+#           path: fossology-action-fork
+
+#       # Step 1: Run FOSSology scan (your working main branch)
+#       - name: Run FOSSology analysis
+#         id: fossology
+#         continue-on-error: true
+#         uses: shatakshisgtiwari-jpg/fossology-action@main
+#         with:
+#           scan_mode: "scan-only-deps"
+#           scanners: "ojo copyright"
+#           report_format: "SPDX_JSON"
+#           sbom_path: "sbom.json"
+
+#       # Step 2: Generate per-dependency reports
+#       - name: Generate Per-Dependency Reports
+#         run: |
+#           bash fossology-action-fork/scripts/generate-per-dependency-reports.sh
+#         env:
+#           REPORT_FORMAT: "SPDX_JSON"
+#           SBOM_PATH: "sbom.json"
+#           PER_DEPENDENCY_REPORT_DIR: "per-dependency-reports"
+
+#       # Step 3: Upload artifacts
+#       - name: Upload Consolidated Report
+#         if: success() || failure()
+#         uses: actions/upload-artifact@v4.6.2
+#         with:
+#           name: Fossology-consolidated-report
+#           path: results/
+
+#       - name: Upload Per-Dependency Reports
+#         if: success() || failure()
+#         uses: actions/upload-artifact@v4.6.2
+#         with:
+#           name: Fossology-per-dependency-reports
+#           path: per-dependency-reports/
+
+name: SCA Full Pipeline — had-radiologyplus
 
 on:
   push:
+    branches: ["**"]
+  workflow_dispatch:
 
 permissions:
   contents: read
   actions: write
 
+env:
+  PROJECT_NAME: had-radiologyplus
+  PROJECT_VERSION: "1.0.0"
+  CAPYCLI_DIR: capycli-fork
+  REPORT_DIR: per-dependency-reports
+  SOURCE_DIR: sources
+
 jobs:
-  sbom:
-    runs-on: ubuntu-latest
+  # ──────────────────────────────────────────────────────────
+  # JOB 1: Generate SBOM
+  # ──────────────────────────────────────────────────────────
+  generate-sbom:
+    name: "Step 1 · Generate CycloneDX SBOM"
+    runs-on: self-hosted          # must reach localhost:8080 SW360
 
     steps:
-      - name: Checkout
+      - name: Checkout project
         uses: actions/checkout@v4
 
       - uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '21'
+          distribution: temurin
+          java-version: "21"
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
 
       - name: Install cdxgen
         run: npm install -g @cyclonedx/cdxgen
 
-      - name: Generate CDX SBOM
+      - name: Generate SBOM
         run: cdxgen -r -o sbom.json --spec-version 1.6 --format json
+
+      - name: Verify SBOM was created
+        run: test -f sbom.json || (echo "sbom.json not found!" && exit 1)
 
       - uses: actions/upload-artifact@v4
         with:
@@ -139,56 +248,228 @@ jobs:
           path: sbom.json
           if-no-files-found: error
 
-  sca:
-    runs-on: ubuntu-latest
-    needs: sbom
+  # ──────────────────────────────────────────────────────────
+  # JOB 2: CapyCLI + Fossology + SW360 upload
+  # ──────────────────────────────────────────────────────────
+  sca-pipeline:
+    name: "Steps 2-9 · Map → Create → Scan → Upload → Validate"
+    runs-on: self-hosted
+    needs: generate-sbom
+
     steps:
-      - name: Checkout
+      - name: Checkout project
         uses: actions/checkout@v4
 
-      - name: Download SBOM
+      # ── Download SBOM from job 1 ───────────────────────────
+      - name: Download SBOM artifact
         uses: actions/download-artifact@v4
         with:
           name: sbom
 
-      # Checkout fork to get the per-dependency script
-      - name: Checkout Fork for Scripts
+      # ── Clone CapyCLI fork ─────────────────────────────────
+      - name: Checkout CapyCLI fork
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/capycli-fork
+          path: ${{ env.CAPYCLI_DIR }}
+
+      # ── Checkout Fossology fork for per-dep script ─────────
+      - name: Checkout Fossology fork (per-dependency script)
         uses: actions/checkout@v4
         with:
           repository: shatakshisgtiwari-jpg/fossology-action
           ref: feat/action/per-dependency-report
           path: fossology-action-fork
 
-      # Step 1: Run FOSSology scan (your working main branch)
-      - name: Run FOSSology analysis
+      # ── Python + CapyCLI setup ─────────────────────────────
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install CapyCLI
+        run: |
+          pip install -e ${{ env.CAPYCLI_DIR }}
+
+      # ── Step 2: Map SBOM to SW360 ─────────────────────────
+      - name: "Step 2 · Map SBOM to SW360"
+        run: |
+          python -m capycli bom map \
+            -i sbom.json \
+            -url ${{ vars.SW360_URL }} \
+            -t ${{ secrets.SW360_TOKEN }} \
+            -mr mapping-result.json \
+            -o mapped-sbom.json \
+            --matchmode full-search,all-versions \
+            -v
+        working-directory: ${{ env.CAPYCLI_DIR }}
+        env:
+          PYTHONPATH: ${{ env.CAPYCLI_DIR }}
+
+      - name: Verify mapped SBOM
+        run: test -f ${{ env.CAPYCLI_DIR }}/mapped-sbom.json
+
+      # ── Step 3a: Create missing components ────────────────
+      - name: "Step 3a · Create missing components on SW360"
+        run: |
+          python -m capycli bom createcomponents \
+            -i mapped-sbom.json \
+            -o created-sbom.json \
+            -url ${{ vars.SW360_URL }} \
+            -t ${{ secrets.SW360_TOKEN }} \
+            --download \
+            -v
+        working-directory: ${{ env.CAPYCLI_DIR }}
+
+      # ── Step 3b: Create missing releases ──────────────────
+      - name: "Step 3b · Create missing releases on SW360"
+        run: |
+          python -m capycli bom createreleases \
+            -i created-sbom.json \
+            -o created-sbom.json \
+            -url ${{ vars.SW360_URL }} \
+            -t ${{ secrets.SW360_TOKEN }} \
+            --download \
+            -v
+        working-directory: ${{ env.CAPYCLI_DIR }}
+
+      # ── Step 4: Create / update project ───────────────────
+      - name: "Step 4 · Create / update SW360 project"
+        run: |
+          python -m capycli project create \
+            -i created-sbom.json \
+            -url ${{ vars.SW360_URL }} \
+            -t ${{ secrets.SW360_TOKEN }} \
+            -name "${{ env.PROJECT_NAME }}" \
+            -version "${{ env.PROJECT_VERSION }}" \
+            -source had-radiologyplus-project-info.json \
+            -v
+        working-directory: ${{ env.CAPYCLI_DIR }}
+
+      # ── Capture project ID ─────────────────────────────────
+      - name: "Capture SW360 project ID"
+        id: get-project-id
+        run: |
+          python -m capycli project find \
+            -name "${{ env.PROJECT_NAME }}" \
+            -version "${{ env.PROJECT_VERSION }}" \
+            -url ${{ vars.SW360_URL }} \
+            -t ${{ secrets.SW360_TOKEN }} 2>&1 \
+          | tee /tmp/find-output.txt
+
+          PROJECT_ID=$(grep -oP '(?<=Id:\s)[a-f0-9]{32}' /tmp/find-output.txt | head -1)
+          echo "project_id=$PROJECT_ID" >> $GITHUB_OUTPUT
+          echo "Found project ID: $PROJECT_ID"
+        working-directory: ${{ env.CAPYCLI_DIR }}
+
+      # ── Step 5: Download sources ───────────────────────────
+      - name: "Step 5 · Download dependency sources"
+        run: |
+          mkdir -p ${{ env.SOURCE_DIR }}
+          python -m capycli bom downloadsources \
+            -i created-sbom.json \
+            -source ${{ env.SOURCE_DIR }} \
+            -o sourced-sbom.json \
+            -v
+        working-directory: ${{ env.CAPYCLI_DIR }}
+
+      # ── Step 6: Fossology scan → per-dep reports ──────────
+      - name: "Step 6 · Run FOSSology analysis"
         id: fossology
+        continue-on-error: true
         uses: shatakshisgtiwari-jpg/fossology-action@main
         with:
           scan_mode: "scan-only-deps"
           scanners: "ojo copyright"
           report_format: "SPDX_JSON"
-          sbom_path: "sbom.json"
+          sbom_path: "${{ env.CAPYCLI_DIR }}/created-sbom.json"
 
-      # Step 2: Generate per-dependency reports
-      - name: Generate Per-Dependency Reports
+      - name: "Step 6b · Generate per-dependency SPDX reports"
         run: |
+          mkdir -p ${{ env.REPORT_DIR }}
           bash fossology-action-fork/scripts/generate-per-dependency-reports.sh
         env:
           REPORT_FORMAT: "SPDX_JSON"
-          SBOM_PATH: "sbom.json"
-          PER_DEPENDENCY_REPORT_DIR: "per-dependency-reports"
+          SBOM_PATH: "${{ env.CAPYCLI_DIR }}/created-sbom.json"
+          PER_DEPENDENCY_REPORT_DIR: "${{ env.REPORT_DIR }}"
 
-      # Step 3: Upload artifacts
-      - name: Upload Consolidated Report
-        if: success() || failure()
-        uses: actions/upload-artifact@v4.6.2
+      # ── Step 7: Attach sources to releases ────────────────
+      - name: "Step 7 · Attach source files to SW360 releases"
+        run: |
+          python -m capycli bom createreleases \
+            -i sourced-sbom.json \
+            -o final-sbom.json \
+            -url ${{ vars.SW360_URL }} \
+            -t ${{ secrets.SW360_TOKEN }} \
+            -source ${{ env.SOURCE_DIR }} \
+            -v
+        working-directory: ${{ env.CAPYCLI_DIR }}
+
+      # ── Step 8: Upload per-dep scan reports ───────────────
+      - name: "Step 8 · Upload per-dependency scan reports to SW360"
+        run: |
+          REPORT_COUNT=$(find ${{ env.REPORT_DIR }} -name "*.spdx.json" 2>/dev/null | wc -l)
+          echo "Reports found: $REPORT_COUNT"
+
+          if [ "$REPORT_COUNT" -gt "0" ]; then
+            python -m capycli bom uploadreports \
+              -i final-sbom.json \
+              --report-dir ../${{ env.REPORT_DIR }} \
+              --filetype COMPONENT_LICENSE_INFO_XML \
+              --comment "Fossology SPDX scan - ${{ env.PROJECT_NAME }} ${{ env.PROJECT_VERSION }}" \
+              -url ${{ vars.SW360_URL }} \
+              -t ${{ secrets.SW360_TOKEN }} \
+              -o final-sbom.json \
+              -v
+          else
+            echo "WARNING: No .spdx.json reports found - skipping upload."
+          fi
+        working-directory: ${{ env.CAPYCLI_DIR }}
+
+      # ── Step 9: Validate ───────────────────────────────────
+      - name: "Step 9 · Validate pipeline completeness"
+        run: |
+          ID_ARG=""
+          if [ -n "${{ steps.get-project-id.outputs.project_id }}" ]; then
+            ID_ARG="-id ${{ steps.get-project-id.outputs.project_id }}"
+          else
+            ID_ARG="-name ${{ env.PROJECT_NAME }} -version ${{ env.PROJECT_VERSION }}"
+          fi
+
+          python -m capycli project prerequisites \
+            -i final-sbom.json \
+            $ID_ARG \
+            -url ${{ vars.SW360_URL }} \
+            -t ${{ secrets.SW360_TOKEN }} \
+            --check-reports \
+            --forceerror \
+            -v
+        working-directory: ${{ env.CAPYCLI_DIR }}
+
+      # ── Upload all artifacts ────────────────────────────────
+      - name: Upload SBOM artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: Fossology-consolidated-report
+          name: sbom-artifacts
+          path: |
+            ${{ env.CAPYCLI_DIR }}/mapped-sbom.json
+            ${{ env.CAPYCLI_DIR }}/created-sbom.json
+            ${{ env.CAPYCLI_DIR }}/sourced-sbom.json
+            ${{ env.CAPYCLI_DIR }}/final-sbom.json
+            ${{ env.CAPYCLI_DIR }}/mapping-result.json
+
+      - name: Upload Fossology consolidated report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fossology-consolidated-report
           path: results/
+          if-no-files-found: warn
 
-      - name: Upload Per-Dependency Reports
-        if: success() || failure()
-        uses: actions/upload-artifact@v4.6.2
+      - name: Upload per-dependency reports
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: Fossology-per-dependency-reports
-          path: per-dependency-reports/
+          name: fossology-per-dependency-reports
+          path: ${{ env.REPORT_DIR }}/
+          if-no-files-found: warn
