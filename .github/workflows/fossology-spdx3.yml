@@ -312,7 +312,8 @@ jobs:
 
       - name: Install CapyCLI
         run: |
-          pip install ${{ env.CAPYCLI_DIR }}
+          pip install .
+        working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
       # ── Step 2: Map SBOM to SW360 ─────────────────────────
