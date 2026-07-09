@@ -327,10 +327,7 @@ jobs:
             -o mapped-sbom.json `
             --matchmode full-search,all-versions `
             -v
-        working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
-        env:
-          PYTHONPATH: ${{ env.CAPYCLI_DIR }}
 
       - name: Verify mapped SBOM
         run: |
@@ -339,7 +336,6 @@ jobs:
             exit 1
           }
           Write-Host "mapped-sbom.json created successfully"
-        working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
       # ── Step 3a: Create missing components ────────────────
@@ -352,7 +348,6 @@ jobs:
             -t ${{ secrets.SW360_TOKEN }} `
             --download `
             -v
-        working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
       # ── Step 3b: Create missing releases ──────────────────
@@ -365,7 +360,6 @@ jobs:
             -t ${{ secrets.SW360_TOKEN }} `
             --download `
             -v
-        working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
       # ── Step 4: Create / update project ───────────────────
@@ -377,9 +371,8 @@ jobs:
             -t ${{ secrets.SW360_TOKEN }} `
             -name "${{ env.PROJECT_NAME }}" `
             -version "${{ env.PROJECT_VERSION }}" `
-            -source had-radiologyplus-project-info.json `
+            -source ${{ env.CAPYCLI_DIR }}/had-radiologyplus-project-info.json `
             -v
-        working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
       # ── Capture project ID ─────────────────────────────────
@@ -399,7 +392,6 @@ jobs:
           } else {
             Write-Host "WARNING: Could not auto-detect project ID"
           }
-        working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
       # ── Step 5: Download sources ───────────────────────────
@@ -413,7 +405,6 @@ jobs:
             -source ${{ env.SOURCE_DIR }} `
             -o sourced-sbom.json `
             -v
-        working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
       # ── Step 6: Fossology scan → per-dep reports ──────────
@@ -425,7 +416,7 @@ jobs:
           scan_mode: "scan-only-deps"
           scanners: "ojo copyright"
           report_format: "SPDX_JSON"
-          sbom_path: "${{ env.CAPYCLI_DIR }}/created-sbom.json"
+          sbom_path: "created-sbom.json"
 
       - name: "Step 6b · Generate per-dependency SPDX reports"
         run: |
@@ -436,7 +427,7 @@ jobs:
         shell: powershell
         env:
           REPORT_FORMAT: "SPDX_JSON"
-          SBOM_PATH: "${{ env.CAPYCLI_DIR }}/created-sbom.json"
+          SBOM_PATH: "created-sbom.json"
           PER_DEPENDENCY_REPORT_DIR: "${{ env.REPORT_DIR }}"
 
       # ── Step 7: Attach sources to releases ────────────────
@@ -449,7 +440,6 @@ jobs:
             -t ${{ secrets.SW360_TOKEN }} `
             -source ${{ env.SOURCE_DIR }} `
             -v
-        working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
       # ── Step 8: Upload per-dep scan reports ───────────────
@@ -472,7 +462,6 @@ jobs:
           } else {
             Write-Host "WARNING: No .spdx.json reports found - skipping upload."
           }
-        working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
       # ── Step 9: Validate ───────────────────────────────────
@@ -494,7 +483,6 @@ jobs:
             --check-reports `
             --forceerror `
             -v
-        working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
       # ── Upload all artifacts ────────────────────────────────
@@ -504,11 +492,11 @@ jobs:
         with:
           name: sbom-artifacts
           path: |
-            ${{ env.CAPYCLI_DIR }}/mapped-sbom.json
-            ${{ env.CAPYCLI_DIR }}/created-sbom.json
-            ${{ env.CAPYCLI_DIR }}/sourced-sbom.json
-            ${{ env.CAPYCLI_DIR }}/final-sbom.json
-            ${{ env.CAPYCLI_DIR }}/mapping-result.json
+            mapped-sbom.json
+            created-sbom.json
+            sourced-sbom.json
+            final-sbom.json
+            
 
       - name: Upload Fossology consolidated report
         if: always()
