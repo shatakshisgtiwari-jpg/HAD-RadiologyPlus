@@ -228,6 +228,23 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+          cache: maven
+
+      - name: Install Maven
+        run: |
+          if (-not (Get-Command mvn -ErrorAction SilentlyContinue)) {
+            Write-Host "Installing Maven..."
+            Invoke-WebRequest -Uri "https://repo1.maven.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip" `
+              -OutFile maven.zip
+            Expand-Archive maven.zip -DestinationPath $env:USERPROFILE\.maven -Force
+            Remove-Item maven.zip
+            $mavenHome = (Get-ChildItem $env:USERPROFILE\.maven\apache-maven* -Directory).FullName
+            [Environment]::SetEnvironmentVariable("MAVEN_HOME", $mavenHome, "Process")
+            [Environment]::SetEnvironmentVariable("PATH", "$mavenHome\bin;$env:PATH", "Process")
+          }
+          Write-Host "Maven version:"
+          mvn -version
+        shell: pwsh
 
       - uses: actions/setup-node@v4
         with:
@@ -240,7 +257,13 @@ jobs:
         run: cdxgen -r -o sbom.json --spec-version 1.6 --format json
 
       - name: Verify SBOM was created
-        run: test -f sbom.json || (echo "sbom.json not found!" && exit 1)
+        run: |
+          if (-not (Test-Path sbom.json)) {
+            Write-Error "sbom.json not found!"
+            exit 1
+          }
+          Write-Host "sbom.json created successfully"
+        shell: pwsh
 
       - uses: actions/upload-artifact@v4
         with:
@@ -289,88 +312,107 @@ jobs:
       - name: Install CapyCLI
         run: |
           pip install -e ${{ env.CAPYCLI_DIR }}
+        shell: pwsh
 
       # ── Step 2: Map SBOM to SW360 ─────────────────────────
       - name: "Step 2 · Map SBOM to SW360"
         run: |
-          python -m capycli bom map \
-            -i sbom.json \
-            -url ${{ vars.SW360_URL }} \
-            -t ${{ secrets.SW360_TOKEN }} \
-            -mr mapping-result.json \
-            -o mapped-sbom.json \
-            --matchmode full-search,all-versions \
+          python -m capycli bom map `
+            -i sbom.json `
+            -url ${{ vars.SW360_URL }} `
+            -t ${{ secrets.SW360_TOKEN }} `
+            -mr mapping-result.json `
+            -o mapped-sbom.json `
+            --matchmode full-search,all-versions `
             -v
         working-directory: ${{ env.CAPYCLI_DIR }}
+        shell: pwsh
         env:
           PYTHONPATH: ${{ env.CAPYCLI_DIR }}
 
       - name: Verify mapped SBOM
-        run: test -f ${{ env.CAPYCLI_DIR }}/mapped-sbom.json
+        run: |
+          if (-not (Test-Path mapped-sbom.json)) {
+            Write-Error "mapped-sbom.json not found!"
+            exit 1
+          }
+          Write-Host "mapped-sbom.json created successfully"
+        working-directory: ${{ env.CAPYCLI_DIR }}
+        shell: pwsh
 
       # ── Step 3a: Create missing components ────────────────
       - name: "Step 3a · Create missing components on SW360"
         run: |
-          python -m capycli bom createcomponents \
-            -i mapped-sbom.json \
-            -o created-sbom.json \
-            -url ${{ vars.SW360_URL }} \
-            -t ${{ secrets.SW360_TOKEN }} \
-            --download \
+          python -m capycli bom createcomponents `
+            -i mapped-sbom.json `
+            -o created-sbom.json `
+            -url ${{ vars.SW360_URL }} `
+            -t ${{ secrets.SW360_TOKEN }} `
+            --download `
             -v
         working-directory: ${{ env.CAPYCLI_DIR }}
+        shell: pwsh
 
       # ── Step 3b: Create missing releases ──────────────────
       - name: "Step 3b · Create missing releases on SW360"
         run: |
-          python -m capycli bom createreleases \
-            -i created-sbom.json \
-            -o created-sbom.json \
-            -url ${{ vars.SW360_URL }} \
-            -t ${{ secrets.SW360_TOKEN }} \
-            --download \
+          python -m capycli bom createreleases `
+            -i created-sbom.json `
+            -o created-sbom.json `
+            -url ${{ vars.SW360_URL }} `
+            -t ${{ secrets.SW360_TOKEN }} `
+            --download `
             -v
         working-directory: ${{ env.CAPYCLI_DIR }}
+        shell: pwsh
 
       # ── Step 4: Create / update project ───────────────────
       - name: "Step 4 · Create / update SW360 project"
         run: |
-          python -m capycli project create \
-            -i created-sbom.json \
-            -url ${{ vars.SW360_URL }} \
-            -t ${{ secrets.SW360_TOKEN }} \
-            -name "${{ env.PROJECT_NAME }}" \
-            -version "${{ env.PROJECT_VERSION }}" \
-            -source had-radiologyplus-project-info.json \
+          python -m capycli project create `
+            -i created-sbom.json `
+            -url ${{ vars.SW360_URL }} `
+            -t ${{ secrets.SW360_TOKEN }} `
+            -name "${{ env.PROJECT_NAME }}" `
+            -version "${{ env.PROJECT_VERSION }}" `
+            -source had-radiologyplus-project-info.json `
             -v
         working-directory: ${{ env.CAPYCLI_DIR }}
+        shell: pwsh
 
       # ── Capture project ID ─────────────────────────────────
       - name: "Capture SW360 project ID"
         id: get-project-id
         run: |
-          python -m capycli project find \
-            -name "${{ env.PROJECT_NAME }}" \
-            -version "${{ env.PROJECT_VERSION }}" \
-            -url ${{ vars.SW360_URL }} \
-            -t ${{ secrets.SW360_TOKEN }} 2>&1 \
-          | tee /tmp/find-output.txt
-
-          PROJECT_ID=$(grep -oP '(?<=Id:\s)[a-f0-9]{32}' /tmp/find-output.txt | head -1)
-          echo "project_id=$PROJECT_ID" >> $GITHUB_OUTPUT
-          echo "Found project ID: $PROJECT_ID"
+          $output = python -m capycli project find `
+            -name "${{ env.PROJECT_NAME }}" `
+            -version "${{ env.PROJECT_VERSION }}" `
+            -url ${{ vars.SW360_URL }} `
+            -t ${{ secrets.SW360_TOKEN }} 2>&1
+          Write-Host $output
+          $projectId = ($output | Select-String -Pattern '([a-f0-9]{32})' -AllMatches).Matches.Groups[1].Value
+          if ($projectId) {
+            Write-Host "Found project ID: $projectId"
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "project_id=$projectId"
+          } else {
+            Write-Host "WARNING: Could not auto-detect project ID"
+          }
         working-directory: ${{ env.CAPYCLI_DIR }}
+        shell: pwsh
 
       # ── Step 5: Download sources ───────────────────────────
       - name: "Step 5 · Download dependency sources"
         run: |
-          mkdir -p ${{ env.SOURCE_DIR }}
-          python -m capycli bom downloadsources \
-            -i created-sbom.json \
-            -source ${{ env.SOURCE_DIR }} \
-            -o sourced-sbom.json \
+          if (-not (Test-Path ${{ env.SOURCE_DIR }})) {
+            New-Item -ItemType Directory -Path ${{ env.SOURCE_DIR }} | Out-Null
+          }
+          python -m capycli bom downloadsources `
+            -i created-sbom.json `
+            -source ${{ env.SOURCE_DIR }} `
+            -o sourced-sbom.json `
             -v
         working-directory: ${{ env.CAPYCLI_DIR }}
+        shell: pwsh
 
       # ── Step 6: Fossology scan → per-dep reports ──────────
       - name: "Step 6 · Run FOSSology analysis"
@@ -385,8 +427,11 @@ jobs:
 
       - name: "Step 6b · Generate per-dependency SPDX reports"
         run: |
-          mkdir -p ${{ env.REPORT_DIR }}
+          if (-not (Test-Path ${{ env.REPORT_DIR }})) {
+            New-Item -ItemType Directory -Path ${{ env.REPORT_DIR }} | Out-Null
+          }
           bash fossology-action-fork/scripts/generate-per-dependency-reports.sh
+        shell: pwsh
         env:
           REPORT_FORMAT: "SPDX_JSON"
           SBOM_PATH: "${{ env.CAPYCLI_DIR }}/created-sbom.json"
@@ -395,55 +440,60 @@ jobs:
       # ── Step 7: Attach sources to releases ────────────────
       - name: "Step 7 · Attach source files to SW360 releases"
         run: |
-          python -m capycli bom createreleases \
-            -i sourced-sbom.json \
-            -o final-sbom.json \
-            -url ${{ vars.SW360_URL }} \
-            -t ${{ secrets.SW360_TOKEN }} \
-            -source ${{ env.SOURCE_DIR }} \
+          python -m capycli bom createreleases `
+            -i sourced-sbom.json `
+            -o final-sbom.json `
+            -url ${{ vars.SW360_URL }} `
+            -t ${{ secrets.SW360_TOKEN }} `
+            -source ${{ env.SOURCE_DIR }} `
             -v
         working-directory: ${{ env.CAPYCLI_DIR }}
+        shell: pwsh
 
       # ── Step 8: Upload per-dep scan reports ───────────────
       - name: "Step 8 · Upload per-dependency scan reports to SW360"
         run: |
-          REPORT_COUNT=$(find ${{ env.REPORT_DIR }} -name "*.spdx.json" 2>/dev/null | wc -l)
-          echo "Reports found: $REPORT_COUNT"
+          $reportFiles = Get-ChildItem -Path ${{ env.REPORT_DIR }} -Filter "*.spdx.json" -Recurse -ErrorAction SilentlyContinue
+          $reportCount = $reportFiles.Count
+          Write-Host "Reports found: $reportCount"
 
-          if [ "$REPORT_COUNT" -gt "0" ]; then
-            python -m capycli bom uploadreports \
-              -i final-sbom.json \
-              --report-dir ../${{ env.REPORT_DIR }} \
-              --filetype COMPONENT_LICENSE_INFO_XML \
-              --comment "Fossology SPDX scan - ${{ env.PROJECT_NAME }} ${{ env.PROJECT_VERSION }}" \
-              -url ${{ vars.SW360_URL }} \
-              -t ${{ secrets.SW360_TOKEN }} \
-              -o final-sbom.json \
+          if ($reportCount -gt 0) {
+            python -m capycli bom uploadreports `
+              -i final-sbom.json `
+              --report-dir ${{ env.REPORT_DIR }} `
+              --filetype COMPONENT_LICENSE_INFO_XML `
+              --comment "Fossology SPDX scan - ${{ env.PROJECT_NAME }} ${{ env.PROJECT_VERSION }}" `
+              -url ${{ vars.SW360_URL }} `
+              -t ${{ secrets.SW360_TOKEN }} `
+              -o final-sbom.json `
               -v
-          else
-            echo "WARNING: No .spdx.json reports found - skipping upload."
-          fi
+          } else {
+            Write-Host "WARNING: No .spdx.json reports found - skipping upload."
+          }
         working-directory: ${{ env.CAPYCLI_DIR }}
+        shell: pwsh
 
       # ── Step 9: Validate ───────────────────────────────────
       - name: "Step 9 · Validate pipeline completeness"
         run: |
-          ID_ARG=""
-          if [ -n "${{ steps.get-project-id.outputs.project_id }}" ]; then
-            ID_ARG="-id ${{ steps.get-project-id.outputs.project_id }}"
-          else
-            ID_ARG="-name ${{ env.PROJECT_NAME }} -version ${{ env.PROJECT_VERSION }}"
-          fi
+          $idArg = @()
+          $projectId = "${{ steps.get-project-id.outputs.project_id }}"
+          if ($projectId) {
+            $idArg = @("-id", $projectId)
+          } else {
+            $idArg = @("-name", "${{ env.PROJECT_NAME }}", "-version", "${{ env.PROJECT_VERSION }}")
+          }
 
-          python -m capycli project prerequisites \
-            -i final-sbom.json \
-            $ID_ARG \
-            -url ${{ vars.SW360_URL }} \
-            -t ${{ secrets.SW360_TOKEN }} \
-            --check-reports \
-            --forceerror \
+          python -m capycli project prerequisites `
+            -i final-sbom.json `
+            @idArg `
+            -url ${{ vars.SW360_URL }} `
+            -t ${{ secrets.SW360_TOKEN }} `
+            --check-reports `
+            --forceerror `
             -v
         working-directory: ${{ env.CAPYCLI_DIR }}
+        shell: pwsh
 
       # ── Upload all artifacts ────────────────────────────────
       - name: Upload SBOM artifacts
