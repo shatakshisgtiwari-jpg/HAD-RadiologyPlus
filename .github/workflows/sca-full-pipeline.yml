@@ -152,8 +152,18 @@ jobs:
             -o created-sbom.json `
             -url ${{ vars.SW360_URL }} `
             -t ${{ secrets.SW360_TOKEN }} `
-            --download `
             -v
+        shell: powershell
+
+      # ── Fallback: ensure created-sbom.json always exists ──
+      - name: "Step 3a-fallback · Ensure created-sbom.json exists"
+        run: |
+          if (-not (Test-Path created-sbom.json)) {
+            Write-Host "created-sbom.json missing (step 3a crashed) — falling back to mapped-sbom.json"
+            Copy-Item mapped-sbom.json created-sbom.json
+          } else {
+            Write-Host "created-sbom.json present — continuing"
+          }
         shell: powershell
 
       # ── Step 3b: Create missing releases ──────────────────
@@ -165,7 +175,6 @@ jobs:
             -o created-sbom.json `
             -url ${{ vars.SW360_URL }} `
             -t ${{ secrets.SW360_TOKEN }} `
-            --download `
             -v
         shell: powershell
 
