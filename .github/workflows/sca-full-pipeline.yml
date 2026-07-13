@@ -175,7 +175,7 @@ jobs:
             -t ${{ secrets.SW360_TOKEN }} `
             -name "${{ env.PROJECT_NAME }}" `
             -version "${{ env.PROJECT_VERSION }}" `
-            -source ${{ env.CAPYCLI_DIR }}/had-radiologyplus-project-info.json `
+            -source had-radiologyplus-project-info.json `
             -v
         shell: powershell
 
