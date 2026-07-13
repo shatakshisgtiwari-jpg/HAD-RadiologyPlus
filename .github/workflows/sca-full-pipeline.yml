@@ -1,9 +1,7 @@
 name: SCA Full Pipeline — had-radiologyplus
 
 on:
-  push:
-    branches: ["**"]
-  workflow_dispatch:
+  workflow_dispatch:    # manual trigger only
 
 permissions:
   contents: read
