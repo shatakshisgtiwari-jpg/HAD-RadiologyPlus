@@ -1,9 +1,7 @@
 name: SCA Full Pipeline — had-radiologyplus
 
 on:
-  push:
-    branches: ["**"]
-  workflow_dispatch:
+  workflow_dispatch:    # manual trigger only
 
 permissions:
   contents: read
@@ -87,6 +85,15 @@ jobs:
       - name: Checkout project
         uses: actions/checkout@v4
 
+      # ── Clean stale SBOM files from previous runs ──────────
+      - name: Clean stale workspace files
+        run: |
+          Remove-Item -Force -ErrorAction SilentlyContinue `
+            mapped-sbom.json, created-sbom.json, sourced-sbom.json, `
+            final-sbom.json, mapping-result.json, sbom.json
+          Write-Host "Workspace cleaned"
+        shell: powershell
+
       # ── Download SBOM from job 1 ───────────────────────────
       - name: Download SBOM artifact
         uses: actions/download-artifact@v4
@@ -152,8 +159,23 @@ jobs:
             -o created-sbom.json `
             -url ${{ vars.SW360_URL }} `
             -t ${{ secrets.SW360_TOKEN }} `
-            --download `
             -v
+        shell: powershell
+
+      # ── Fallback: ensure created-sbom.json always exists ──
+      - name: "Step 3a-fallback · Ensure created-sbom.json exists"
+        run: |
+          Write-Host "Checking workspace files..."
+          Get-ChildItem -Path . -Filter "*.json" | Select-Object Name, Length
+          if (-not (Test-Path created-sbom.json)) {
+            Write-Host "created-sbom.json missing — copying mapped-sbom.json"
+            Copy-Item mapped-sbom.json created-sbom.json
+          }
+          if (-not (Test-Path created-sbom.json)) {
+            Write-Error "FATAL: created-sbom.json still missing after fallback!"
+            exit 1
+          }
+          Write-Host "created-sbom.json verified ($(Get-Item created-sbom.json).Length bytes)"
         shell: powershell
 
       # ── Step 3b: Create missing releases ──────────────────
@@ -165,7 +187,6 @@ jobs:
             -o created-sbom.json `
             -url ${{ vars.SW360_URL }} `
             -t ${{ secrets.SW360_TOKEN }} `
-            --download `
             -v
         shell: powershell
 
