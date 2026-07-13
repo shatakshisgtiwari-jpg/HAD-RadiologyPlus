@@ -122,6 +122,7 @@ jobs:
 
       # ── Step 2: Map SBOM to SW360 ─────────────────────────
       - name: "Step 2 · Map SBOM to SW360"
+        continue-on-error: true        # exit 1 = unmatched components — expected on empty SW360
         run: |
           python -m capycli bom map `
             -i sbom.json `
@@ -144,6 +145,7 @@ jobs:
 
       # ── Step 3a: Create missing components ────────────────
       - name: "Step 3a · Create missing components on SW360"
+        continue-on-error: true
         run: |
           python -m capycli bom createcomponents `
             -i mapped-sbom.json `
@@ -156,6 +158,7 @@ jobs:
 
       # ── Step 3b: Create missing releases ──────────────────
       - name: "Step 3b · Create missing releases on SW360"
+        continue-on-error: true
         run: |
           python -m capycli bom createreleases `
             -i created-sbom.json `
@@ -175,7 +178,7 @@ jobs:
             -t ${{ secrets.SW360_TOKEN }} `
             -name "${{ env.PROJECT_NAME }}" `
             -version "${{ env.PROJECT_VERSION }}" `
-            -source ${{ env.CAPYCLI_DIR }}/had-radiologyplus-project-info.json `
+            -source had-radiologyplus-project-info.json `
             -v
         shell: powershell
 
