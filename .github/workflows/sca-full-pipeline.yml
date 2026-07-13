@@ -165,12 +165,17 @@ jobs:
       # ── Fallback: ensure created-sbom.json always exists ──
       - name: "Step 3a-fallback · Ensure created-sbom.json exists"
         run: |
+          Write-Host "Checking workspace files..."
+          Get-ChildItem -Path . -Filter "*.json" | Select-Object Name, Length
           if (-not (Test-Path created-sbom.json)) {
-            Write-Host "created-sbom.json missing (step 3a crashed) — falling back to mapped-sbom.json"
+            Write-Host "created-sbom.json missing — copying mapped-sbom.json"
             Copy-Item mapped-sbom.json created-sbom.json
-          } else {
-            Write-Host "created-sbom.json present — continuing"
           }
+          if (-not (Test-Path created-sbom.json)) {
+            Write-Error "FATAL: created-sbom.json still missing after fallback!"
+            exit 1
+          }
+          Write-Host "created-sbom.json verified ($(Get-Item created-sbom.json).Length bytes)"
         shell: powershell
 
       # ── Step 3b: Create missing releases ──────────────────
