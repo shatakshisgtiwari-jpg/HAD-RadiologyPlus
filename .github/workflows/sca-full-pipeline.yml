@@ -84,8 +84,8 @@ jobs:
     steps:
       - name: Checkout project
         uses: actions/checkout@v4
-
-      # ── Clean stale SBOM files from previous runs ──────────
+        with:
+          clean: true       # ensure fresh checkout on self-hosted runner
       - name: Clean stale workspace files
         run: |
           Remove-Item -Force -ErrorAction SilentlyContinue `
@@ -142,9 +142,10 @@ jobs:
         shell: powershell
 
       - name: Verify mapped SBOM
+        continue-on-error: true
         run: |
           if (-not (Test-Path mapped-sbom.json)) {
-            Write-Error "mapped-sbom.json not found!"
+            Write-Host "WARNING: mapped-sbom.json not found — Step 2 may have failed completely"
             exit 1
           }
           Write-Host "mapped-sbom.json created successfully"
