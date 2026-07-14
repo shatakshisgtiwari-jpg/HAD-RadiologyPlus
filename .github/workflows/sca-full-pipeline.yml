@@ -111,13 +111,7 @@ jobs:
           path: ${{ env.CAPYCLI_DIR }}
           clean: true       # ensure fresh checkout, no stale files
 
-      # ── Checkout Fossology fork for per-dep script ─────────
-      - name: Checkout Fossology fork (per-dependency script)
-        uses: actions/checkout@v4
-        with:
-          repository: shatakshisgtiwari-jpg/fossology-action
-          ref: feat/action/per-dependency-report
-          path: fossology-action-fork
+
 
       # ── Python + CapyCLI setup ─────────────────────────────
       - uses: actions/setup-python@v5
@@ -263,85 +257,41 @@ jobs:
             -v
         shell: powershell
 
-      # ── Step 6: Fossology scan → per-dep reports ──────────
-      - name: "Step 6 · Run FOSSology analysis"
+      # ── Step 6: Generate SPDX scan reports (Python fallback) ──
+      - name: "Step 6 · Generate consolidated SPDX report"
         id: fossology
-        continue-on-error: true
         run: |
-          Write-Host "=== Running FOSSology scan ==="
-          Write-Host "SBOM: created-sbom.json"
-          Write-Host "Scanners: ojo copyright"
-          Write-Host "Report format: SPDX_JSON"
-          
-          # Convert script.sh to LF line endings for bash compatibility
-          $scriptPath = "fossology-action-fork/script.sh"
-          $content = Get-Content $scriptPath -Raw
-          $content = $content -replace '\r\n', '\n'
-          Set-Content $scriptPath $content -NoNewline -Encoding UTF8
-          
-          # Run the fossology scanner script directly
-          bash "$scriptPath"
+          Write-Host "=== Generating consolidated SPDX report ==="
+          python .github/scripts/generate_consolidated_report.py
         shell: powershell
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_PULL_REQUEST: ""
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_API_URL: ${{ github.api_url }}
-          GITHUB_REPO_URL: ${{ github.repositoryUrl }}
-          GITHUB_REPO_OWNER: ${{ github.repository_owner }}
-          GITHUB_ACTIONS: "true"
-          SCANNERS: "ojo copyright"
-          SCAN_MODE: "scan-only-deps"
-          REPORT_FORMAT: "SPDX_JSON"
-          SBOM_PATH: "created-sbom.json"
-          SCAN_DIR: ""
-          KEYWORD_CONF_FILE_PATH: ""
-          ALLOWLIST_FILE_PATH: ""
-          FROM_TAG: ""
-          TO_TAG: ""
 
-      - name: "Step 6b · Verify Fossology results"
+      - name: "Step 6b · Verify consolidated report"
         run: |
-          Write-Host "=== Verifying Fossology results ==="
-          if (Test-Path "results") {
-            $files = Get-ChildItem -Path "results" -File
-            Write-Host "Files in results/: $($files.Count)"
-            $files | ForEach-Object { Write-Host "  $($_.Name) ($($_.Length) bytes)" }
-            
-            $jsonFiles = $files | Where-Object { $_.Extension -eq '.json' }
-            if ($jsonFiles.Count -eq 0) {
-              Write-Host "WARNING: No JSON reports found in results/"
-              Write-Host "Contents of results/:"
-              Get-ChildItem -Path "results" -Recurse | ForEach-Object { Write-Host "  $($_.FullName)" }
-            } else {
-              Write-Host "Found $($jsonFiles.Count) JSON report(s)"
+          Write-Host "=== Verifying consolidated SPDX report ==="
+          if (Test-Path "results/sbom_spdx.json") {
+            $size = (Get-Item "results/sbom_spdx.json").Length
+            Write-Host "OK: results/sbom_spdx.json found ($size bytes)"
+            try {
+              $content = Get-Content "results/sbom_spdx.json" -Raw | ConvertFrom-Json
+              $pkgCount = $content.packages.Count
+              Write-Host "OK: Valid JSON with $pkgCount packages"
+            } catch {
+              Write-Host "ERROR: Invalid JSON in sbom_spdx.json"
+              exit 1
             }
           } else {
-            Write-Host "ERROR: results/ directory not found"
-            Write-Host "Current directory contents:"
-            Get-ChildItem -Path . | ForEach-Object { Write-Host "  $($_.Name)" }
+            Write-Host "ERROR: results/sbom_spdx.json not found"
+            exit 1
           }
         shell: powershell
 
       - name: "Step 6c · Generate per-dependency SPDX reports"
-        continue-on-error: true
         run: |
           Write-Host "=== Generating per-dependency reports ==="
-          if (-not (Test-Path ${{ env.REPORT_DIR }})) {
-            New-Item -ItemType Directory -Path ${{ env.REPORT_DIR }} | Out-Null
-          }
-          # Convert CRLF to LF for bash compatibility on Windows
-          $scriptPath = "fossology-action-fork/scripts/generate-per-dependency-reports.sh"
-          $content = Get-Content $scriptPath -Raw
-          $content = $content -replace '\r\n', '\n'
-          Set-Content $scriptPath $content -NoNewline -Encoding UTF8
-          # Run the script with bash
-          bash "$scriptPath"
+          python .github/scripts/generate_per_dependency_reports.py
         shell: powershell
         env:
-          REPORT_FORMAT: "SPDX_JSON"
-          SBOM_PATH: "created-sbom.json"
-          PER_DEPENDENCY_REPORT_DIR: "${{ env.REPORT_DIR }}"
+          REPORT_DIR: ${{ env.REPORT_DIR }}
 
       - name: "Step 6d · Verify per-dependency reports"
         run: |
@@ -349,8 +299,9 @@ jobs:
           if (Test-Path ${{ env.REPORT_DIR }}) {
             $files = Get-ChildItem -Path ${{ env.REPORT_DIR }} -Filter "*.spdx.json" -File
             Write-Host "Per-dependency reports found: $($files.Count)"
-            $files | ForEach-Object { Write-Host "  $($_.Name) ($($_.Length) bytes)" }
-            if ($files.Count -eq 0) {
+            if ($files.Count -gt 0) {
+              $files | ForEach-Object { Write-Host "  $($_.Name) ($($_.Length) bytes)" }
+            } else {
               Write-Host "WARNING: No .spdx.json files found"
               Write-Host "Contents of ${{ env.REPORT_DIR }}:"
               Get-ChildItem -Path ${{ env.REPORT_DIR }} | ForEach-Object { Write-Host "  $($_.Name)" }
