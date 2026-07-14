@@ -79,7 +79,7 @@ jobs:
   # JOB 2: CapyCLI + Fossology + SW360 upload
   # ──────────────────────────────────────────────────────────
   sca-pipeline:
-    name: "Steps 2-9 · Map → Create → Scan → Upload → Validate"
+    name: "Map → Create → Scan → Upload → Validate"
     runs-on: self-hosted
     needs: generate-sbom
 
@@ -267,16 +267,66 @@ jobs:
       - name: "Step 6 · Run FOSSology analysis"
         id: fossology
         continue-on-error: true
-        uses: shatakshisgtiwari-jpg/fossology-action@main
-        with:
-          scan_mode: "scan-only-deps"
-          scanners: "ojo copyright"
-          report_format: "SPDX_JSON"
-          sbom_path: "created-sbom.json"
+        run: |
+          Write-Host "=== Running FOSSology scan ==="
+          Write-Host "SBOM: created-sbom.json"
+          Write-Host "Scanners: ojo copyright"
+          Write-Host "Report format: SPDX_JSON"
+          
+          # Convert script.sh to LF line endings for bash compatibility
+          $scriptPath = "fossology-action-fork/script.sh"
+          $content = Get-Content $scriptPath -Raw
+          $content = $content -replace '\r\n', '\n'
+          Set-Content $scriptPath $content -NoNewline -Encoding UTF8
+          
+          # Run the fossology scanner script directly
+          bash "$scriptPath"
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_PULL_REQUEST: ""
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_REPO_URL: ${{ github.repositoryUrl }}
+          GITHUB_REPO_OWNER: ${{ github.repository_owner }}
+          GITHUB_ACTIONS: "true"
+          SCANNERS: "ojo copyright"
+          SCAN_MODE: "scan-only-deps"
+          REPORT_FORMAT: "SPDX_JSON"
+          SBOM_PATH: "created-sbom.json"
+          SCAN_DIR: ""
+          KEYWORD_CONF_FILE_PATH: ""
+          ALLOWLIST_FILE_PATH: ""
+          FROM_TAG: ""
+          TO_TAG: ""
 
-      - name: "Step 6b · Generate per-dependency SPDX reports"
+      - name: "Step 6b · Verify Fossology results"
+        run: |
+          Write-Host "=== Verifying Fossology results ==="
+          if (Test-Path "results") {
+            $files = Get-ChildItem -Path "results" -File
+            Write-Host "Files in results/: $($files.Count)"
+            $files | ForEach-Object { Write-Host "  $($_.Name) ($($_.Length) bytes)" }
+            
+            $jsonFiles = $files | Where-Object { $_.Extension -eq '.json' }
+            if ($jsonFiles.Count -eq 0) {
+              Write-Host "WARNING: No JSON reports found in results/"
+              Write-Host "Contents of results/:"
+              Get-ChildItem -Path "results" -Recurse | ForEach-Object { Write-Host "  $($_.FullName)" }
+            } else {
+              Write-Host "Found $($jsonFiles.Count) JSON report(s)"
+            }
+          } else {
+            Write-Host "ERROR: results/ directory not found"
+            Write-Host "Current directory contents:"
+            Get-ChildItem -Path . | ForEach-Object { Write-Host "  $($_.Name)" }
+          }
+        shell: powershell
+
+      - name: "Step 6c · Generate per-dependency SPDX reports"
         continue-on-error: true
         run: |
+          Write-Host "=== Generating per-dependency reports ==="
           if (-not (Test-Path ${{ env.REPORT_DIR }})) {
             New-Item -ItemType Directory -Path ${{ env.REPORT_DIR }} | Out-Null
           }
@@ -284,7 +334,7 @@ jobs:
           $scriptPath = "fossology-action-fork/scripts/generate-per-dependency-reports.sh"
           $content = Get-Content $scriptPath -Raw
           $content = $content -replace '\r\n', '\n'
-          Set-Content $scriptPath $content -NoNewline
+          Set-Content $scriptPath $content -NoNewline -Encoding UTF8
           # Run the script with bash
           bash "$scriptPath"
         shell: powershell
@@ -292,6 +342,23 @@ jobs:
           REPORT_FORMAT: "SPDX_JSON"
           SBOM_PATH: "created-sbom.json"
           PER_DEPENDENCY_REPORT_DIR: "${{ env.REPORT_DIR }}"
+
+      - name: "Step 6d · Verify per-dependency reports"
+        run: |
+          Write-Host "=== Verifying per-dependency reports ==="
+          if (Test-Path ${{ env.REPORT_DIR }}) {
+            $files = Get-ChildItem -Path ${{ env.REPORT_DIR }} -Filter "*.spdx.json" -File
+            Write-Host "Per-dependency reports found: $($files.Count)"
+            $files | ForEach-Object { Write-Host "  $($_.Name) ($($_.Length) bytes)" }
+            if ($files.Count -eq 0) {
+              Write-Host "WARNING: No .spdx.json files found"
+              Write-Host "Contents of ${{ env.REPORT_DIR }}:"
+              Get-ChildItem -Path ${{ env.REPORT_DIR }} | ForEach-Object { Write-Host "  $($_.Name)" }
+            }
+          } else {
+            Write-Host "WARNING: ${{ env.REPORT_DIR }} directory not found"
+          }
+        shell: powershell
 
       # ── Step 7: Attach sources to releases ────────────────
       - name: "Step 7 · Attach source files to SW360 releases"
