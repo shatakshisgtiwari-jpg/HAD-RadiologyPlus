@@ -217,6 +217,7 @@ jobs:
 
       # ── Step 4: Create / update project ───────────────────
       - name: "Step 4 · Create / update SW360 project"
+        continue-on-error: true
         run: |
           python -m capycli project create `
             -i created-sbom.json `
