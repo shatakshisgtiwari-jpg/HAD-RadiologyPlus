@@ -275,11 +275,18 @@ jobs:
           sbom_path: "created-sbom.json"
 
       - name: "Step 6b · Generate per-dependency SPDX reports"
+        continue-on-error: true
         run: |
           if (-not (Test-Path ${{ env.REPORT_DIR }})) {
             New-Item -ItemType Directory -Path ${{ env.REPORT_DIR }} | Out-Null
           }
-          bash fossology-action-fork/scripts/generate-per-dependency-reports.sh
+          # Convert CRLF to LF for bash compatibility on Windows
+          $scriptPath = "fossology-action-fork/scripts/generate-per-dependency-reports.sh"
+          $content = Get-Content $scriptPath -Raw
+          $content = $content -replace '\r\n', '\n'
+          Set-Content $scriptPath $content -NoNewline
+          # Run the script with bash
+          bash "$scriptPath"
         shell: powershell
         env:
           REPORT_FORMAT: "SPDX_JSON"
