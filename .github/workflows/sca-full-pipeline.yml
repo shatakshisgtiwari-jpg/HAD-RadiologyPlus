@@ -84,8 +84,8 @@ jobs:
     steps:
       - name: Checkout project
         uses: actions/checkout@v4
-
-      # ── Clean stale SBOM files from previous runs ──────────
+        with:
+          clean: true       # ensure fresh checkout on self-hosted runner
       - name: Clean stale workspace files
         run: |
           Remove-Item -Force -ErrorAction SilentlyContinue `
@@ -107,6 +107,7 @@ jobs:
           repository: ${{ github.repository_owner }}/capycli
           ref: feat/sw360/upload_reports
           path: ${{ env.CAPYCLI_DIR }}
+          clean: true       # ensure fresh checkout, no stale files
 
       # ── Checkout Fossology fork for per-dep script ─────────
       - name: Checkout Fossology fork (per-dependency script)
@@ -121,15 +122,37 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install CapyCLI
+      - name: Install CapyCLI (force reinstall)
         run: |
-          pip install .
+          pip uninstall capycli -y
+          pip install . --force-reinstall --no-cache-dir
         working-directory: ${{ env.CAPYCLI_DIR }}
+        shell: powershell
+
+      - name: Verify CapyCLI installation
+        run: |
+          Write-Host "=== Verifying capycli map_bom.py fix ==="
+          $mapBomPath = Join-Path ${{ env.CAPYCLI_DIR }} "capycli\bom\map_bom.py"
+          $content = Get-Content $mapBomPath -Raw
+          if ($content -match "Incomplete mapping is acceptable") {
+            Write-Host "OK: map_bom.py contains exit-0 fix"
+          } else {
+            Write-Host "ERROR: map_bom.py missing exit-0 fix — stale code!"
+            exit 1
+          }
+          $createCompPath = Join-Path ${{ env.CAPYCLI_DIR }} "capycli\bom\create_components.py"
+          $content2 = Get-Content $createCompPath -Raw
+          if ($content2 -match "Skipped \(400 Bad Request\)") {
+            Write-Host "OK: create_components.py contains 400-handling fix"
+          } else {
+            Write-Host "ERROR: create_components.py missing 400-handling fix — stale code!"
+            exit 1
+          }
+          Write-Host "=== CapyCLI fixes verified ==="
         shell: powershell
 
       # ── Step 2: Map SBOM to SW360 ─────────────────────────
       - name: "Step 2 · Map SBOM to SW360"
-        continue-on-error: true        # exit 1 = unmatched components — expected on empty SW360
         run: |
           python -m capycli bom map `
             -i sbom.json `
@@ -144,7 +167,7 @@ jobs:
       - name: Verify mapped SBOM
         run: |
           if (-not (Test-Path mapped-sbom.json)) {
-            Write-Error "mapped-sbom.json not found!"
+            Write-Host "WARNING: mapped-sbom.json not found — Step 2 may have failed completely"
             exit 1
           }
           Write-Host "mapped-sbom.json created successfully"
