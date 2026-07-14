@@ -133,10 +133,10 @@ jobs:
 
       - name: Verify CapyCLI installation
         run: |
-          Write-Host "=== Verifying capycli map_bom.py fix ==="
+          Write-Host "=== Verifying capycli fixes ==="
           $mapBomPath = Join-Path ${{ env.CAPYCLI_DIR }} "capycli\bom\map_bom.py"
           $content = Get-Content $mapBomPath -Raw
-          if ($content -match "Incomplete mapping is acceptable") {
+          if ($content -match 'Incomplete mapping is acceptable') {
             Write-Host "OK: map_bom.py contains exit-0 fix"
           } else {
             Write-Host "ERROR: map_bom.py missing exit-0 fix — stale code!"
@@ -144,7 +144,7 @@ jobs:
           }
           $createCompPath = Join-Path ${{ env.CAPYCLI_DIR }} "capycli\bom\create_components.py"
           $content2 = Get-Content $createCompPath -Raw
-          if ($content2 -match "Skipped \(400 Bad Request\)") {
+          if ($content2 -match 'Skipped.*400.*Bad Request') {
             Write-Host "OK: create_components.py contains 400-handling fix"
           } else {
             Write-Host "ERROR: create_components.py missing 400-handling fix — stale code!"
