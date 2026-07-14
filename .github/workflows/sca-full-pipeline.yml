@@ -139,7 +139,7 @@ jobs:
           if ($content -match 'Incomplete mapping is acceptable') {
             Write-Host "OK: map_bom.py contains exit-0 fix"
           } else {
-            Write-Host "ERROR: map_bom.py missing exit-0 fix — stale code!"
+            Write-Host "ERROR: map_bom.py missing exit-0 fix - stale code!"
             exit 1
           }
           $createCompPath = Join-Path ${{ env.CAPYCLI_DIR }} "capycli\bom\create_components.py"
@@ -147,7 +147,7 @@ jobs:
           if ($content2 -match 'Skipped.*400.*Bad Request') {
             Write-Host "OK: create_components.py contains 400-handling fix"
           } else {
-            Write-Host "ERROR: create_components.py missing 400-handling fix — stale code!"
+            Write-Host "ERROR: create_components.py missing 400-handling fix - stale code!"
             exit 1
           }
           Write-Host "=== CapyCLI fixes verified ==="
@@ -169,7 +169,7 @@ jobs:
       - name: Verify mapped SBOM
         run: |
           if (-not (Test-Path mapped-sbom.json)) {
-            Write-Host "WARNING: mapped-sbom.json not found — Step 2 may have failed completely"
+            Write-Host "WARNING: mapped-sbom.json not found - Step 2 may have failed completely"
             exit 1
           }
           Write-Host "mapped-sbom.json created successfully"
@@ -193,7 +193,7 @@ jobs:
           Write-Host "Checking workspace files..."
           Get-ChildItem -Path . -Filter "*.json" | Select-Object Name, Length
           if (-not (Test-Path created-sbom.json)) {
-            Write-Host "created-sbom.json missing — copying mapped-sbom.json"
+            Write-Host "created-sbom.json missing - copying mapped-sbom.json"
             Copy-Item mapped-sbom.json created-sbom.json
           }
           if (-not (Test-Path created-sbom.json)) {
