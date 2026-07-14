@@ -231,6 +231,7 @@ jobs:
       # ── Capture project ID ─────────────────────────────────
       - name: "Capture SW360 project ID"
         id: get-project-id
+        continue-on-error: true
         run: |
           $output = python -m capycli project find `
             -name "${{ env.PROJECT_NAME }}" `
@@ -238,12 +239,13 @@ jobs:
             -url ${{ vars.SW360_URL }} `
             -t ${{ secrets.SW360_TOKEN }} 2>&1
           Write-Host $output
-          $projectId = ($output | Select-String -Pattern '([a-f0-9]{32})' -AllMatches).Matches.Groups[1].Value
-          if ($projectId) {
+          $match = ($output | Select-String -Pattern '([a-f0-9]{32})' -AllMatches)
+          if ($match -and $match.Matches.Count -gt 0) {
+            $projectId = $match.Matches.Groups[1].Value
             Write-Host "Found project ID: $projectId"
             Add-Content -Path $env:GITHUB_OUTPUT -Value "project_id=$projectId"
           } else {
-            Write-Host "WARNING: Could not auto-detect project ID"
+            Write-Host "WARNING: Could not auto-detect project ID - will use name/version instead"
           }
         shell: powershell
 
