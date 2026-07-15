@@ -260,7 +260,7 @@ jobs:
               $searchUrl = "$url/resource/api/search?type=project&searchText=${{ env.PROJECT_NAME }}&pagination=0&elements=10"
               $response = Invoke-RestMethod -Uri $searchUrl -Headers @{
                 "X-CSRF-Token" = "$token"
-                "Authorization" = "Bearer $token"
+                "Authorization" = "Token $token"
               } -ErrorAction Stop
 
               if ($response._embedded -and $response._embedded."sw360:projects") {
@@ -287,7 +287,7 @@ jobs:
               $listUrl = "$url/resource/api/projects?pagination=0&elements=50"
               $response = Invoke-RestMethod -Uri $listUrl -Headers @{
                 "X-CSRF-Token" = "$token"
-                "Authorization" = "Bearer $token"
+                "Authorization" = "Token $token"
               } -ErrorAction Stop
 
               if ($response._embedded -and $response._embedded."sw360:projects") {
