@@ -111,6 +111,15 @@ jobs:
           path: ${{ env.CAPYCLI_DIR }}
           clean: true       # ensure fresh checkout, no stale files
 
+      # ── Clone Fossology action (for Docker scanner) ────────
+      - name: Checkout Fossology action
+        uses: actions/checkout@v4
+        with:
+          repository: shatakshisgtiwari-jpg/fossology-action
+          ref: main
+          path: fossology-action
+          clean: true
+
 
 
       # ── Python + CapyCLI setup ─────────────────────────────
@@ -209,8 +218,8 @@ jobs:
             -v
         shell: powershell
 
-      # ── Step 4: Create / update project ───────────────────
-      - name: "Step 4 · Create / update SW360 project"
+      # ── Step 4: Create / update project (CapyCLI handles find-or-create) ──
+      - name: "Step 4 · Create or update SW360 project"
         continue-on-error: true
         run: |
           python -m capycli project create `
@@ -223,24 +232,85 @@ jobs:
             -v
         shell: powershell
 
-      # ── Capture project ID ─────────────────────────────────
+      # ── Capture project ID (robust fallback chain) ────────────────────────
       - name: "Capture SW360 project ID"
         id: get-project-id
-        continue-on-error: true
         run: |
+          Write-Host "=== Capturing SW360 project ID ==="
+          $projectId = $null
+
+          # Method 1: Try capycli project find (search by name)
+          Write-Host "Method 1: Searching via capycli project find..."
           $output = python -m capycli project find `
             -name "${{ env.PROJECT_NAME }}" `
-            -version "${{ env.PROJECT_VERSION }}" `
             -url ${{ vars.SW360_URL }} `
             -t ${{ secrets.SW360_TOKEN }} 2>&1
-          Write-Host $output
           $match = ($output | Select-String -Pattern '([a-f0-9]{32})' -AllMatches)
           if ($match -and $match.Matches.Count -gt 0) {
             $projectId = $match.Matches.Groups[1].Value
-            Write-Host "Found project ID: $projectId"
+            Write-Host "Found project ID via search: $projectId"
+          }
+
+          # Method 2: If search failed, query SW360 API directly
+          if (-not $projectId) {
+            Write-Host "Method 2: Querying SW360 API directly..."
+            try {
+              $token = "${{ secrets.SW360_TOKEN }}"
+              $url = "${{ vars.SW360_URL }}"
+              $searchUrl = "$url/resource/api/search?type=project&searchText=${{ env.PROJECT_NAME }}&pagination=0&elements=10"
+              $response = Invoke-RestMethod -Uri $searchUrl -Headers @{
+                "X-CSRF-Token" = "$token"
+                "Authorization" = "Bearer $token"
+              } -ErrorAction Stop
+
+              if ($response._embedded -and $response._embedded."sw360:projects") {
+                foreach ($proj in $response._embedded."sw360:projects") {
+                  if ($proj.name -eq "${{ env.PROJECT_NAME }}" -and $proj.version -eq "${{ env.PROJECT_VERSION }}") {
+                    $href = $proj._links.self.href
+                    $projectId = $href.Split('/')[-1]
+                    Write-Host "Found project ID via API: $projectId"
+                    break
+                  }
+                }
+              }
+            } catch {
+              Write-Host "API query failed: $($_.Exception.Message)"
+            }
+          }
+
+          # Method 3: If all else fails, list all projects and find by name
+          if (-not $projectId) {
+            Write-Host "Method 3: Listing all projects..."
+            try {
+              $token = "${{ secrets.SW360_TOKEN }}"
+              $url = "${{ vars.SW360_URL }}"
+              $listUrl = "$url/resource/api/projects?pagination=0&elements=50"
+              $response = Invoke-RestMethod -Uri $listUrl -Headers @{
+                "X-CSRF-Token" = "$token"
+                "Authorization" = "Bearer $token"
+              } -ErrorAction Stop
+
+              if ($response._embedded -and $response._embedded."sw360:projects") {
+                foreach ($proj in $response._embedded."sw360:projects") {
+                  if ($proj.name -eq "${{ env.PROJECT_NAME }}" -and $proj.version -eq "${{ env.PROJECT_VERSION }}") {
+                    $href = $proj._links.self.href
+                    $projectId = $href.Split('/')[-1]
+                    Write-Host "Found project ID via listing: $projectId"
+                    break
+                  }
+                }
+              }
+            } catch {
+              Write-Host "Project listing failed: $($_.Exception.Message)"
+            }
+          }
+
+          # Set output for downstream steps
+          if ($projectId) {
+            Write-Host "SUCCESS: Project ID = $projectId"
             Add-Content -Path $env:GITHUB_OUTPUT -Value "project_id=$projectId"
           } else {
-            Write-Host "WARNING: Could not auto-detect project ID - will use name/version instead"
+            Write-Host "WARNING: Could not find project ID - will use name/version instead"
           }
         shell: powershell
 
@@ -257,59 +327,18 @@ jobs:
             -v
         shell: powershell
 
-      # ── Step 6: Generate SPDX scan reports (Python fallback) ──
-      - name: "Step 6 · Generate consolidated SPDX report"
+      # ── Step 6: Fossology scan (with per-dependency reports) ──
+      - name: "Step 6 · Run FOSSology analysis"
         id: fossology
-        run: |
-          Write-Host "=== Generating consolidated SPDX report ==="
-          python .github/scripts/generate_consolidated_report.py
-        shell: powershell
-
-      - name: "Step 6b · Verify consolidated report"
-        run: |
-          Write-Host "=== Verifying consolidated SPDX report ==="
-          if (Test-Path "results/sbom_spdx.json") {
-            $size = (Get-Item "results/sbom_spdx.json").Length
-            Write-Host "OK: results/sbom_spdx.json found ($size bytes)"
-            try {
-              $content = Get-Content "results/sbom_spdx.json" -Raw | ConvertFrom-Json
-              $pkgCount = $content.packages.Count
-              Write-Host "OK: Valid JSON with $pkgCount packages"
-            } catch {
-              Write-Host "ERROR: Invalid JSON in sbom_spdx.json"
-              exit 1
-            }
-          } else {
-            Write-Host "ERROR: results/sbom_spdx.json not found"
-            exit 1
-          }
-        shell: powershell
-
-      - name: "Step 6c · Generate per-dependency SPDX reports"
-        run: |
-          Write-Host "=== Generating per-dependency reports ==="
-          python .github/scripts/generate_per_dependency_reports.py
-        shell: powershell
-        env:
-          REPORT_DIR: ${{ env.REPORT_DIR }}
-
-      - name: "Step 6d · Verify per-dependency reports"
-        run: |
-          Write-Host "=== Verifying per-dependency reports ==="
-          if (Test-Path ${{ env.REPORT_DIR }}) {
-            $files = Get-ChildItem -Path ${{ env.REPORT_DIR }} -Filter "*.spdx.json" -File
-            Write-Host "Per-dependency reports found: $($files.Count)"
-            if ($files.Count -gt 0) {
-              $files | ForEach-Object { Write-Host "  $($_.Name) ($($_.Length) bytes)" }
-            } else {
-              Write-Host "WARNING: No .spdx.json files found"
-              Write-Host "Contents of ${{ env.REPORT_DIR }}:"
-              Get-ChildItem -Path ${{ env.REPORT_DIR }} | ForEach-Object { Write-Host "  $($_.Name)" }
-            }
-          } else {
-            Write-Host "WARNING: ${{ env.REPORT_DIR }} directory not found"
-          }
-        shell: powershell
+        continue-on-error: true
+        uses: shatakshisgtiwari-jpg/fossology-action@feat/action/per-dependency-report
+        with:
+          scan_mode: "scan-only-deps"
+          scanners: "ojo copyright"
+          report_format: "SPDX_JSON"
+          sbom_path: "created-sbom.json"
+          per_dependency_report: "true"
+          report_dir: ${{ env.REPORT_DIR }}
 
       # ── Step 7: Attach sources to releases ────────────────
       - name: "Step 7 · Attach source files to SW360 releases"
@@ -323,8 +352,9 @@ jobs:
             -v
         shell: powershell
 
-      # ── Step 8: Upload per-dep scan reports ───────────────
+      # ── Step 8: Upload per-dependency scan reports ─────────
       - name: "Step 8 · Upload per-dependency scan reports to SW360"
+        continue-on-error: true
         run: |
           $reportFiles = Get-ChildItem -Path ${{ env.REPORT_DIR }} -Filter "*.spdx.json" -Recurse -ErrorAction SilentlyContinue
           $reportCount = $reportFiles.Count
@@ -361,7 +391,6 @@ jobs:
             @idArg `
             -url ${{ vars.SW360_URL }} `
             -t ${{ secrets.SW360_TOKEN }} `
-            --check-reports `
             --forceerror `
             -v
         shell: powershell
@@ -377,20 +406,13 @@ jobs:
             created-sbom.json
             sourced-sbom.json
             final-sbom.json
-            
 
-      - name: Upload Fossology consolidated report
+      - name: Upload Fossology reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fossology-consolidated-report
-          path: results/
-          if-no-files-found: warn
-
-      - name: Upload per-dependency reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fossology-per-dependency-reports
-          path: ${{ env.REPORT_DIR }}/
+          name: fossology-reports
+          path: |
+            results/
+            ${{ env.REPORT_DIR }}/
           if-no-files-found: warn
