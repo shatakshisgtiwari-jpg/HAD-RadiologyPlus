@@ -245,6 +245,7 @@ jobs:
             -name "${{ env.PROJECT_NAME }}" `
             -url ${{ vars.SW360_URL }} `
             -t ${{ secrets.SW360_TOKEN }} 2>&1
+          $null = $LASTEXITCODE  # Clear exit code from failed python command
           $match = ($output | Select-String -Pattern '([a-f0-9]{32})' -AllMatches)
           if ($match -and $match.Matches.Count -gt 0) {
             $projectId = $match.Matches.Groups[1].Value
@@ -312,6 +313,9 @@ jobs:
           } else {
             Write-Host "WARNING: Could not find project ID - will use name/version instead"
           }
+
+          # Ensure step exits 0 (PowerShell may inherit exit code from failed python command)
+          exit 0
         shell: powershell
 
       # ── Step 5: Download sources ───────────────────────────
