@@ -111,17 +111,6 @@ jobs:
           path: ${{ env.CAPYCLI_DIR }}
           clean: true       # ensure fresh checkout, no stale files
 
-      # ── Clone Fossology action (for Docker scanner) ────────
-      - name: Checkout Fossology action
-        uses: actions/checkout@v4
-        with:
-          repository: shatakshisgtiwari-jpg/fossology-action
-          ref: main
-          path: fossology-action
-          clean: true
-
-
-
       # ── Python + CapyCLI setup ─────────────────────────────
       - uses: actions/setup-python@v5
         with:
