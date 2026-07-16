@@ -368,7 +368,7 @@ jobs:
           }
         shell: powershell
 
-      # ── Step 9: Validate ───────────────────────────────────
+      # ── Step 9: Validate process ───────────────────────────────────
       - name: "Step 9 · Validate pipeline completeness"
         run: |
           $idArg = @()
