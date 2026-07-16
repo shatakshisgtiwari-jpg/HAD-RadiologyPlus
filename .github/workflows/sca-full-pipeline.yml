@@ -1,3 +1,5 @@
+# scan-deps pipeline
+
 name: SCA Full Pipeline — had-radiologyplus
 
 on:
