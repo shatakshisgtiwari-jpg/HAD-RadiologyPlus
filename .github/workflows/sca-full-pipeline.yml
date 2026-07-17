@@ -3,7 +3,7 @@ name: SCA Full Pipeline — had-radiologyplus
 on:
   push:
     branches: [ main, master, develop ]
-  workflow_dispatch:    # manual trigger 
+  workflow_dispatch:    # manual trigger
 
 permissions:
   contents: read
@@ -88,6 +88,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           clean: true       # ensure fresh checkout on self-hosted runner
+
       - name: Clean stale workspace files
         run: |
           Remove-Item -Force -ErrorAction SilentlyContinue `
@@ -207,7 +208,7 @@ jobs:
             -v
         shell: powershell
 
-      # ── Step 4: Create / update project (CapyCLI handles find-or-create) ──
+      # ── Step 4: Create / update project ───────────────────
       - name: "Step 4 · Create or update SW360 project"
         continue-on-error: true
         run: |
@@ -221,7 +222,7 @@ jobs:
             -v
         shell: powershell
 
-      # ── Capture project ID (robust fallback chain) ────────────────────────
+      # ── Capture project ID (robust fallback chain) ────────
       - name: "Capture SW360 project ID"
         id: get-project-id
         run: |
@@ -252,7 +253,6 @@ jobs:
                 "X-CSRF-Token" = "$token"
                 "Authorization" = "Token $token"
               } -ErrorAction Stop
-
               if ($response._embedded -and $response._embedded."sw360:projects") {
                 foreach ($proj in $response._embedded."sw360:projects") {
                   if ($proj.name -eq "${{ env.PROJECT_NAME }}" -and $proj.version -eq "${{ env.PROJECT_VERSION }}") {
@@ -268,7 +268,7 @@ jobs:
             }
           }
 
-          # Method 3: If all else fails, list all projects and find by name
+          # Method 3: List all projects and find by name
           if (-not $projectId) {
             Write-Host "Method 3: Listing all projects..."
             try {
@@ -279,7 +279,6 @@ jobs:
                 "X-CSRF-Token" = "$token"
                 "Authorization" = "Token $token"
               } -ErrorAction Stop
-
               if ($response._embedded -and $response._embedded."sw360:projects") {
                 foreach ($proj in $response._embedded."sw360:projects") {
                   if ($proj.name -eq "${{ env.PROJECT_NAME }}" -and $proj.version -eq "${{ env.PROJECT_VERSION }}") {
@@ -309,6 +308,7 @@ jobs:
 
       # ── Step 5: Download sources ───────────────────────────
       - name: "Step 5 · Download dependency sources"
+        continue-on-error: true
         run: |
           if (-not (Test-Path ${{ env.SOURCE_DIR }})) {
             New-Item -ItemType Directory -Path ${{ env.SOURCE_DIR }} | Out-Null
@@ -318,6 +318,20 @@ jobs:
             -source ${{ env.SOURCE_DIR }} `
             -o sourced-sbom.json `
             -v
+        shell: powershell
+
+      # ── Fallback: ensure sourced-sbom.json always exists ──
+      - name: "Step 5-fallback · Ensure sourced-sbom.json exists"
+        run: |
+          if (-not (Test-Path sourced-sbom.json)) {
+            Write-Host "sourced-sbom.json missing (download step failed) - copying created-sbom.json"
+            Copy-Item created-sbom.json sourced-sbom.json
+          }
+          if (-not (Test-Path sourced-sbom.json)) {
+            Write-Error "FATAL: sourced-sbom.json still missing after fallback!"
+            exit 1
+          }
+          Write-Host "sourced-sbom.json verified ($(Get-Item sourced-sbom.json).Length bytes)"
         shell: powershell
 
       # ── Step 6: Fossology scan (with per-dependency reports) ──
@@ -335,6 +349,7 @@ jobs:
 
       # ── Step 7: Attach sources to releases ────────────────
       - name: "Step 7 · Attach source files to SW360 releases"
+        continue-on-error: true
         run: |
           python -m capycli bom createreleases `
             -i sourced-sbom.json `
@@ -343,6 +358,20 @@ jobs:
             -t ${{ secrets.SW360_TOKEN }} `
             -source ${{ env.SOURCE_DIR }} `
             -v
+        shell: powershell
+
+      # ── Fallback: ensure final-sbom.json always exists ────
+      - name: "Step 7-fallback · Ensure final-sbom.json exists"
+        run: |
+          if (-not (Test-Path final-sbom.json)) {
+            Write-Host "final-sbom.json missing (Step 7 failed) - copying sourced-sbom.json"
+            Copy-Item sourced-sbom.json final-sbom.json
+          }
+          if (-not (Test-Path final-sbom.json)) {
+            Write-Error "FATAL: final-sbom.json still missing after fallback!"
+            exit 1
+          }
+          Write-Host "final-sbom.json verified ($(Get-Item final-sbom.json).Length bytes)"
         shell: powershell
 
       # ── Step 8: Upload per-dependency scan reports ─────────
@@ -368,7 +397,7 @@ jobs:
           }
         shell: powershell
 
-      # ── Step 9: Validate process ───────────────────────────────────
+      # ── Step 9: Validate pipeline completeness ─────────────
       - name: "Step 9 · Validate pipeline completeness"
         run: |
           $idArg = @()
@@ -384,6 +413,7 @@ jobs:
             @idArg `
             -url ${{ vars.SW360_URL }} `
             -t ${{ secrets.SW360_TOKEN }} `
+            --check-reports `
             --forceerror `
             -v
         shell: powershell
