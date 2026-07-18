@@ -334,6 +334,64 @@ jobs:
           Write-Host "sourced-sbom.json verified ($(Get-Item sourced-sbom.json).Length bytes)"
         shell: powershell
 
+      # ── Step 6-pre: Generate baseline placeholder SPDX report ──
+      # Runs BEFORE the fossology composite action so that results/sbom_spdx.json
+      # always exists. The composite action will overwrite it with real scan data
+      # if Docker succeeds; otherwise the placeholder keeps the pipeline moving.
+      - name: "Step 6-pre · Generate placeholder SPDX report"
+        run: |
+          New-Item -ItemType Directory -Path results -Force | Out-Null
+          $py = @'
+import json, os, re
+from datetime import datetime, timezone
+
+sbom_path = os.environ.get('SBOM_PATH', 'created-sbom.json')
+if not os.path.exists(sbom_path):
+    print(f"ERROR: SBOM not found at {sbom_path}")
+    exit(1)
+
+with open(sbom_path, 'r') as f:
+    sbom = json.load(f)
+
+spdx = {
+    'spdxVersion': 'SPDX-2.3', 'dataLicense': 'CC0-1.0',
+    'SPDXID': 'SPDXRef-DOCUMENT', 'name': 'FOSSology Scan Report (placeholder)',
+    'documentNamespace': 'https://spdx.org/spdxdocs/fossology-placeholder-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'),
+    'creationInfo': {'created': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'creators': ['Tool: FOSSology-Scanner-Placeholder']},
+    'packages': [], 'files': [], 'relationships': []
+}
+
+for comp in sbom.get('components', []):
+    name = comp.get('name', 'unknown')
+    version = comp.get('version', 'unknown')
+    purl = comp.get('purl', '')
+    safe = re.sub(r'[^a-zA-Z0-9._-]', '-', name)
+    pkg = {
+        'SPDXID': f'SPDXRef-Package-{safe}', 'name': name, 'versionInfo': version,
+        'downloadLocation': 'NOASSERTION', 'licenseConcluded': 'NOASSERTION',
+        'licenseDeclared': 'NOASSERTION', 'copyrightText': 'NOASSERTION'
+    }
+    if purl:
+        pkg['externalRefs'] = [{'referenceCategory': 'PACKAGE-MANAGER', 'referenceType': 'purl', 'referenceLocator': purl}]
+    spdx['packages'].append(pkg)
+    spdx['relationships'].append({'spdxElementId': 'SPDXRef-DOCUMENT', 'relationshipType': 'DESCRIBES', 'relatedSpdxElement': pkg['SPDXID']})
+
+os.makedirs('results', exist_ok=True)
+with open('results/sbom_spdx.json', 'w') as f:
+    json.dump(spdx, f, indent=2)
+print(f'Placeholder report generated with {len(spdx["packages"])} packages -> results/sbom_spdx.json')
+'@
+          python -c $py
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "WARNING: Placeholder generation failed (exit $LASTEXITCODE) - continuing anyway"
+          } else {
+            $pkgCount = (python -c "import json; d=json.load(open('results/sbom_spdx.json')); print(len(d.get('packages',[])))")
+            Write-Host "Placeholder SPDX ready: $pkgCount packages"
+          }
+        shell: powershell
+        env:
+          SBOM_PATH: created-sbom.json
+
       # ── Step 6: Fossology scan (with per-dependency reports) ──
       - name: "Step 6 · Run FOSSology analysis"
         id: fossology
