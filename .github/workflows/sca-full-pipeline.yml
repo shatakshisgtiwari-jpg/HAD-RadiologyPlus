@@ -76,7 +76,7 @@ jobs:
           if-no-files-found: error
 
   # ──────────────────────────────────────────────────────────
-  # JOB 2: CapyCLI + Fossology + SW360 upload
+  # JOB 2: CapyCLI + Fossology + SW360 upload -
   # ──────────────────────────────────────────────────────────
   sca-pipeline:
     name: "Map → Create → Scan → Upload → Validate"
