@@ -3,7 +3,7 @@ name: SCA Full Pipeline — had-radiologyplus
 on:
   push:
     branches: [ main, master, develop ]
-  workflow_dispatch:    # manual trigger needed
+  workflow_dispatch:    # manual trigger
 
 permissions:
   contents: read
@@ -333,25 +333,6 @@ jobs:
           }
           Write-Host "sourced-sbom.json verified ($(Get-Item sourced-sbom.json).Length bytes)"
         shell: powershell
-
-      # ── Step 6-pre: Generate baseline placeholder SPDX report ──
-      # Runs BEFORE the fossology composite action so that results/sbom_spdx.json
-      # always exists. The composite action will overwrite it with real scan data
-      # if Docker succeeds; otherwise the placeholder keeps the pipeline moving.
-      - name: "Step 6-pre · Generate placeholder SPDX report"
-        run: |
-          New-Item -ItemType Directory -Path results -Force | Out-Null
-          $b64 = 'aW1wb3J0IGpzb24sIG9zLCByZQpmcm9tIGRhdGV0aW1lIGltcG9ydCBkYXRldGltZSwgdGltZXpvbmUKCnNib21fcGF0aCA9IG9zLmVudmlyb24uZ2V0KCdTQk9NX1BBVEgnLCAnY3JlYXRlZC1zYm9tLmpzb24nKQppZiBub3Qgb3MucGF0aC5leGlzdHMoc2JvbV9wYXRoKToKICAgIHByaW50KGYiRVJST1I6IFNCT00gbm90IGZvdW5kIGF0IHtzYm9tX3BhdGh9IikKICAgIGV4aXQoMSkKCndpdGggb3BlbihzYm9tX3BhdGgsICdyJykgYXMgZjoKICAgIHNib20gPSBqc29uLmxvYWQoZikKCnNwZHggPSB7CiAgICAnc3BkeFZlcnNpb24nOiAnU1BEWC0yLjMnLCAnZGF0YUxpY2Vuc2UnOiAnQ0MwLTEuMCcsCiAgICAnU1BEWElEJzogJ1NQRFhSZWYtRE9DVU1FTlQnLCAnbmFtZSc6ICdGT1NTb2xvZ3kgU2NhbiBSZXBvcnQgKHBsYWNlaG9sZGVyKScsCiAgICAnZG9jdW1lbnROYW1lc3BhY2UnOiAnaHR0cHM6Ly9zcGR4Lm9yZy9zcGR4ZG9jcy9mb3Nzb2xvZ3ktcGxhY2Vob2xkZXItJyArIGRhdGV0aW1lLm5vdyh0aW1lem9uZS51dGMpLnN0cmZ0aW1lKCclWSVtJWRUJUglTSVTWicpLAogICAgJ2NyZWF0aW9uSW5mbyc6IHsnY3JlYXRlZCc6IGRhdGV0aW1lLm5vdyh0aW1lem9uZS51dGMpLnN0cmZ0aW1lKCclWS0lbS0lZFQlSDolTTolU1onKSwgJ2NyZWF0b3JzJzogWydUb29sOiBGT1NTb2xvZ3ktU2Nhbm5lci1QbGFjZWhvbGRlciddfSwKICAgICdwYWNrYWdlcyc6IFtdLCAnZmlsZXMnOiBbXSwgJ3JlbGF0aW9uc2hpcHMnOiBbXQp9Cgpmb3IgY29tcCBpbiBzYm9tLmdldCgnY29tcG9uZW50cycsIFtdKToKICAgIG5hbWUgPSBjb21wLmdldCgnbmFtZScsICd1bmtub3duJykKICAgIHZlcnNpb24gPSBjb21wLmdldCgndmVyc2lvbicsICd1bmtub3duJykKICAgIHB1cmwgPSBjb21wLmdldCgncHVybCcsICcnKQogICAgc2FmZSA9IHJlLnN1YihyJ1teYS16QS1aMC05Ll8tXScsICctJywgbmFtZSkKICAgIHBrZyA9IHsKICAgICAgICAnU1BEWElEJzogZidTUERYUmVmLVBhY2thZ2Ute3NhZmV9JywgJ25hbWUnOiBuYW1lLCAndmVyc2lvbkluZm8nOiB2ZXJzaW9uLAogICAgICAgICdkb3dubG9hZExvY2F0aW9uJzogJ05PQVNTRVJUSU9OJywgJ2xpY2Vuc2VDb25jbHVkZWQnOiAnTk9BU1NFUlRJT04nLAogICAgICAgICdsaWNlbnNlRGVjbGFyZWQnOiAnTk9BU1NFUlRJT04nLCAnY29weXJpZ2h0VGV4dCc6ICdOT0FTU0VSVElPTicKICAgIH0KICAgIGlmIHB1cmw6CiAgICAgICAgcGtnWydleHRlcm5hbFJlZnMnXSA9IFt7J3JlZmVyZW5jZUNhdGVnb3J5JzogJ1BBQ0tBR0UtTUFOQUdFUicsICdyZWZlcmVuY2VUeXBlJzogJ3B1cmwnLCAncmVmZXJlbmNlTG9jYXRvcic6IHB1cmx9XQogICAgc3BkeFsncGFja2FnZXMnXS5hcHBlbmQocGtnKQogICAgc3BkeFsncmVsYXRpb25zaGlwcyddLmFwcGVuZCh7J3NwZHhFbGVtZW50SWQnOiAnU1BEWFJlZi1ET0NVTUVOVCcsICdyZWxhdGlvbnNoaXBUeXBlJzogJ0RFU0NSSUJFUycsICdyZWxhdGVkU3BkeEVsZW1lbnQnOiBwa2dbJ1NQRFhJRCddfSkKCm9zLm1ha2VkaXJzKCdyZXN1bHRzJywgZXhpc3Rfb2s9VHJ1ZSkKd2l0aCBvcGVuKCdyZXN1bHRzL3Nib21fc3BkeC5qc29uJywgJ3cnKSBhcyBmOgogICAganNvbi5kdW1wKHNwZHgsIGYsIGluZGVudD0yKQpwcmludChmJ1BsYWNlaG9sZGVyIHJlcG9ydCBnZW5lcmF0ZWQgd2l0aCB7bGVuKHNwZHhbInBhY2thZ2VzIl0pfSBwYWNrYWdlcyAtPiByZXN1bHRzL3Nib21fc3BkeC5qc29uJyk='
-          $script = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64))
-          python -c $script
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "WARNING: Placeholder generation failed (exit $LASTEXITCODE) - continuing anyway"
-          } else {
-            Write-Host "Placeholder SPDX ready -> results/sbom_spdx.json"
-          }
-        shell: powershell
-        env:
-          SBOM_PATH: created-sbom.json
 
       # ── Step 6: Fossology scan (with per-dependency reports) ──
       - name: "Step 6 · Run FOSSology analysis"
