@@ -300,12 +300,6 @@ jobs:
           }
         shell: powershell
 
-      # ── Step 4b: Trim SBOM to first 5 packages for test ──
-      - name: "Step 4b · Trim SBOM to first 5 packages (test)"
-        run: |
-          python "${{ env.CAPYCLI_DIR }}/scripts/trim_sbom.py"
-        shell: powershell
-
       # ── Step 5: Download sources ───────────────────────────
       - name: "Step 5 · Download dependency sources"
         run: |
