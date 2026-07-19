@@ -162,7 +162,7 @@ jobs:
       - name: Verify mapped SBOM
         run: |
           if (-not (Test-Path mapped-sbom.json)) {
-            Write-Host "WARNING: mapped-sbom.json not found - Step 2 may have failed completely"
+            Write-Host "ERROR: mapped-sbom.json not found - Step 2 failed"
             exit 1
           }
           Write-Host "mapped-sbom.json created successfully"
@@ -170,7 +170,6 @@ jobs:
 
       # ── Step 3a: Create missing components ────────────────
       - name: "Step 3a · Create missing components on SW360"
-        continue-on-error: true
         run: |
           python -m capycli bom createcomponents `
             -i mapped-sbom.json `
@@ -180,25 +179,17 @@ jobs:
             -v
         shell: powershell
 
-      # ── Fallback: ensure created-sbom.json always exists ──
-      - name: "Step 3a-fallback · Ensure created-sbom.json exists"
+      - name: Verify created SBOM
         run: |
-          Write-Host "Checking workspace files..."
-          Get-ChildItem -Path . -Filter "*.json" | Select-Object Name, Length
           if (-not (Test-Path created-sbom.json)) {
-            Write-Host "created-sbom.json missing - copying mapped-sbom.json"
-            Copy-Item mapped-sbom.json created-sbom.json
-          }
-          if (-not (Test-Path created-sbom.json)) {
-            Write-Error "FATAL: created-sbom.json still missing after fallback!"
+            Write-Host "ERROR: created-sbom.json not found - Step 3a failed"
             exit 1
           }
-          Write-Host "created-sbom.json verified ($(Get-Item created-sbom.json).Length bytes)"
+          Write-Host "created-sbom.json created successfully ($(Get-Item created-sbom.json).Length bytes)"
         shell: powershell
 
       # ── Step 3b: Create missing releases ──────────────────
       - name: "Step 3b · Create missing releases on SW360"
-        continue-on-error: true
         run: |
           python -m capycli bom createreleases `
             -i created-sbom.json `
@@ -210,7 +201,6 @@ jobs:
 
       # ── Step 4: Create / update project ───────────────────
       - name: "Step 4 · Create or update SW360 project"
-        continue-on-error: true
         run: |
           python -m capycli project create `
             -i created-sbom.json `
@@ -222,7 +212,7 @@ jobs:
             -v
         shell: powershell
 
-      # ── Capture project ID (robust fallback chain) ────────
+      # ── Capture project ID ────────────────────────────────
       - name: "Capture SW360 project ID"
         id: get-project-id
         run: |
@@ -299,11 +289,9 @@ jobs:
             Write-Host "SUCCESS: Project ID = $projectId"
             Add-Content -Path $env:GITHUB_OUTPUT -Value "project_id=$projectId"
           } else {
-            Write-Host "WARNING: Could not find project ID - will use name/version instead"
+            Write-Host "ERROR: Could not find project ID"
+            exit 1
           }
-
-          # Ensure step exits 0 (PowerShell may inherit exit code from failed python command)
-          exit 0
         shell: powershell
 
       # ── Step 4b: Trim SBOM to first 5 packages for test ──
@@ -314,7 +302,6 @@ jobs:
 
       # ── Step 5: Download sources ───────────────────────────
       - name: "Step 5 · Download dependency sources"
-        continue-on-error: true
         run: |
           if (-not (Test-Path ${{ env.SOURCE_DIR }})) {
             New-Item -ItemType Directory -Path ${{ env.SOURCE_DIR }} | Out-Null
@@ -326,36 +313,45 @@ jobs:
             -v
         shell: powershell
 
-      # ── Fallback: ensure sourced-sbom.json always exists ──
-      - name: "Step 5-fallback · Ensure sourced-sbom.json exists"
+      - name: Verify sourced SBOM
         run: |
           if (-not (Test-Path sourced-sbom.json)) {
-            Write-Host "sourced-sbom.json missing (download step failed) - copying created-sbom.json"
-            Copy-Item created-sbom.json sourced-sbom.json
-          }
-          if (-not (Test-Path sourced-sbom.json)) {
-            Write-Error "FATAL: sourced-sbom.json still missing after fallback!"
+            Write-Host "ERROR: sourced-sbom.json not found - Step 5 failed"
             exit 1
           }
-          Write-Host "sourced-sbom.json verified ($(Get-Item sourced-sbom.json).Length bytes)"
+          Write-Host "sourced-sbom.json created successfully ($(Get-Item sourced-sbom.json).Length bytes)"
         shell: powershell
 
       # ── Step 6: Fossology scan (with per-dependency reports) ──
       - name: "Step 6 · Run FOSSology analysis"
         id: fossology
-        continue-on-error: true
         uses: shatakshisgtiwari-jpg/fossology-action@feat/action/per-dependency-report
         with:
           scan_mode: "scan-only-deps"
-          scanners: "ojo copyright"
+          scanners: "nomos copyright"
           report_format: "SPDX_JSON"
           sbom_path: "created-sbom.json"
           per_dependency_report: "true"
           report_dir: ${{ env.REPORT_DIR }}
 
+      - name: Verify Fossology output
+        run: |
+          if (-not (Test-Path "results/sbom_spdx.json")) {
+            Write-Host "ERROR: results/sbom_spdx.json not found - Step 6 failed"
+            exit 1
+          }
+          $size = (Get-Item "results/sbom_spdx.json").Length
+          Write-Host "OK: results/sbom_spdx.json exists ($size bytes)"
+          $reportFiles = Get-ChildItem -Path ${{ env.REPORT_DIR }} -Filter "*.spdx.json" -Recurse -ErrorAction SilentlyContinue
+          Write-Host "Per-dependency reports: $($reportFiles.Count)"
+          if ($reportFiles.Count -eq 0) {
+            Write-Host "ERROR: No per-dependency reports generated"
+            exit 1
+          }
+        shell: powershell
+
       # ── Step 7: Attach sources to releases ────────────────
       - name: "Step 7 · Attach source files to SW360 releases"
-        continue-on-error: true
         run: |
           python -m capycli bom createreleases `
             -i sourced-sbom.json `
@@ -366,23 +362,17 @@ jobs:
             -v
         shell: powershell
 
-      # ── Fallback: ensure final-sbom.json always exists ────
-      - name: "Step 7-fallback · Ensure final-sbom.json exists"
+      - name: Verify final SBOM
         run: |
           if (-not (Test-Path final-sbom.json)) {
-            Write-Host "final-sbom.json missing (Step 7 failed) - copying sourced-sbom.json"
-            Copy-Item sourced-sbom.json final-sbom.json
-          }
-          if (-not (Test-Path final-sbom.json)) {
-            Write-Error "FATAL: final-sbom.json still missing after fallback!"
+            Write-Host "ERROR: final-sbom.json not found - Step 7 failed"
             exit 1
           }
-          Write-Host "final-sbom.json verified ($(Get-Item final-sbom.json).Length bytes)"
+          Write-Host "final-sbom.json created successfully ($(Get-Item final-sbom.json).Length bytes)"
         shell: powershell
 
       # ── Step 8: Upload per-dependency scan reports ─────────
       - name: "Step 8 · Upload per-dependency scan reports to SW360"
-        continue-on-error: true
         run: |
           $reportFiles = Get-ChildItem -Path ${{ env.REPORT_DIR }} -Filter "*.spdx.json" -Recurse -ErrorAction SilentlyContinue
           $reportCount = $reportFiles.Count
@@ -399,20 +389,21 @@ jobs:
               -o final-sbom.json `
               -v
           } else {
-            Write-Host "WARNING: No .spdx.json reports found - skipping upload."
+            Write-Host "ERROR: No .spdx.json reports found - cannot upload"
+            exit 1
           }
         shell: powershell
 
       # ── Step 9: Validate pipeline completeness ─────────────
       - name: "Step 9 · Validate pipeline completeness"
-        continue-on-error: true
         run: |
           $idArg = @()
           $projectId = "${{ steps.get-project-id.outputs.project_id }}"
           if ($projectId) {
             $idArg = @("-id", $projectId)
           } else {
-            $idArg = @("-name", "${{ env.PROJECT_NAME }}", "-version", "${{ env.PROJECT_VERSION }}")
+            Write-Host "ERROR: Project ID not available"
+            exit 1
           }
 
           python -m capycli project prerequisites `
