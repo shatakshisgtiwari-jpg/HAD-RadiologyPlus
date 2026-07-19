@@ -309,17 +309,7 @@ jobs:
       # ── Step 4b: Trim SBOM to first 10 packages for test ──
       - name: "Step 4b · Trim SBOM to first 10 packages (test)"
         run: |
-          $sbom = Get-Content created-sbom.json -Raw | ConvertFrom-Json
-          $allComps = @($sbom.components)
-          $total = $allComps.Count
-          Write-Host "Total components in SBOM: $total"
-          if ($total -gt 10) {
-            $sbom.components = $allComps | Select-Object -First 10
-            $sbom | ConvertTo-Json -Depth 10 | Set-Content created-sbom.json
-            Write-Host "Trimmed SBOM to first 10 components for test run"
-          } else {
-            Write-Host "SBOM has $total components (<=10), no trimming needed"
-          }
+          python "${{ env.CAPYCLI_DIR }}/scripts/trim_sbom.py"
         shell: powershell
 
       # ── Step 5: Download sources ───────────────────────────
