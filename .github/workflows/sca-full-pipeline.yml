@@ -331,7 +331,7 @@ jobs:
         uses: shatakshisgtiwari-jpg/fossology-action@feat/action/per-dependency-report
         with:
           scan_mode: "scan-only-deps"
-          scanners: "copyright"
+          scanners: "nomos copyright"
           report_format: "SPDX_JSON"
           sbom_path: "created-sbom.json"
           per_dependency_report: "true"
