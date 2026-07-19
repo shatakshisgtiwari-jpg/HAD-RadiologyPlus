@@ -199,6 +199,12 @@ jobs:
             -v
         shell: powershell
 
+      # ── Step 4b: Trim SBOM to first 5 packages for test ──
+      - name: "Step 4b · Trim SBOM to first 5 packages (test)"
+        run: |
+          python "${{ env.CAPYCLI_DIR }}/scripts/trim_sbom.py"
+        shell: powershell
+
       # ── Step 4: Create / update project ───────────────────
       - name: "Step 4 · Create or update SW360 project"
         run: |
