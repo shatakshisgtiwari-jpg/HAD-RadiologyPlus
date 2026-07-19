@@ -22,7 +22,7 @@ jobs:
   # ──────────────────────────────────────────────────────────
   generate-sbom:
     name: "Step 1 · Generate CycloneDX SBOM"
-    runs-on: self-hosted          # must reach localhost:8080 SW360
+    runs-on: self-hosted          # must reach localhost:8080 on SW360
 
     steps:
       - name: Checkout project
