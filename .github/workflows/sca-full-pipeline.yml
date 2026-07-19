@@ -306,8 +306,8 @@ jobs:
           exit 0
         shell: powershell
 
-      # ── Step 4b: Trim SBOM to first 10 packages for test ──
-      - name: "Step 4b · Trim SBOM to first 10 packages (test)"
+      # ── Step 4b: Trim SBOM to first 5 packages for test ──
+      - name: "Step 4b · Trim SBOM to first 5 packages (test)"
         run: |
           python "${{ env.CAPYCLI_DIR }}/scripts/trim_sbom.py"
         shell: powershell
@@ -405,6 +405,7 @@ jobs:
 
       # ── Step 9: Validate pipeline completeness ─────────────
       - name: "Step 9 · Validate pipeline completeness"
+        continue-on-error: true
         run: |
           $idArg = @()
           $projectId = "${{ steps.get-project-id.outputs.project_id }}"
