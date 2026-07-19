@@ -298,6 +298,9 @@ jobs:
             Write-Host "ERROR: Could not find project ID"
             exit 1
           }
+
+          # Force exit 0 — PowerShell inherits non-zero exit code from failed python command above
+          exit 0
         shell: powershell
 
       # ── Step 5: Download sources ───────────────────────────
