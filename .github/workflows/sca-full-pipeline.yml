@@ -3,7 +3,7 @@ name: SCA Full Pipeline — had-radiologyplus
 on:
   push:
     branches: [ main, master, develop ]
-  workflow_dispatch:    
+  workflow_dispatch:    # manual trigger
 
 permissions:
   contents: read
@@ -22,7 +22,7 @@ jobs:
   # ──────────────────────────────────────────────────────────
   generate-sbom:
     name: "Step 1 · Generate CycloneDX SBOM"
-    runs-on: self-hosted          # must reach localhost:8080 on SW360
+    runs-on: self-hosted          # must reach localhost:8080 SW360
 
     steps:
       - name: Checkout project
@@ -304,6 +304,22 @@ jobs:
 
           # Ensure step exits 0 (PowerShell may inherit exit code from failed python command)
           exit 0
+        shell: powershell
+
+      # ── Step 4b: Trim SBOM to first 10 packages for test ──
+      - name: "Step 4b · Trim SBOM to first 10 packages (test)"
+        run: |
+          $sbom = Get-Content created-sbom.json -Raw | ConvertFrom-Json
+          $allComps = @($sbom.components)
+          $total = $allComps.Count
+          Write-Host "Total components in SBOM: $total"
+          if ($total -gt 10) {
+            $sbom.components = $allComps | Select-Object -First 10
+            $sbom | ConvertTo-Json -Depth 10 | Set-Content created-sbom.json
+            Write-Host "Trimmed SBOM to first 10 components for test run"
+          } else {
+            Write-Host "SBOM has $total components (<=10), no trimming needed"
+          }
         shell: powershell
 
       # ── Step 5: Download sources ───────────────────────────
