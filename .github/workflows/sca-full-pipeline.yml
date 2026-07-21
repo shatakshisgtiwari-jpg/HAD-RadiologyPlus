@@ -1,21 +1,16 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # SCA Full Pipeline — had-radiologyplus
 #
-# Generates a CycloneDX SBOM, enriches it with source URLs, maps to SW360,
-# creates missing components/releases, runs FOSSology scans (per-dependency),
-# uploads all artifacts to SW360, and validates completeness.
+# Generates a CycloneDX SBOM, maps to SW360, creates missing components/releases,
+# runs FOSSology scans (per-dependency), uploads all artifacts to SW360,
+# and validates completeness.
 #
 # Key improvements over the original:
-#   1. SBOM enrichment via `capycli bom findsources` adds download URLs
-#      (fixes the root cause of poor map/create results)
-#   2. GitHub token provided to avoid API rate limiting (5,000 req/hr)
-#      - GH_NAME stored in vars (non-sensitive, like SW360_URL)
-#      - GH_TOKEN stored in secrets (sensitive, like SW360_TOKEN)
-#   3. Removed the dangerous "Trim SBOM to first 5 packages" test step
-#      (was a workaround for timeouts — now fixed at the root)
-#   4. `--download` flag on createcomponents downloads sources from URLs
-#   5. Consolidated report uploaded alongside per-dependency reports
-#   6. Better timeout handling and error reporting
+#   1. Replaced cdxgen with CapyCLI getdependencies — reads download URLs
+#      directly from package-lock.json (zero API calls, no timeout)
+#   2. Removed the dangerous "Trim SBOM to first 5 packages" test step
+#   3. Consolidated report uploaded alongside per-dependency reports
+#   4. Better timeout handling and error reporting
 # ──────────────────────────────────────────────────────────────────────────────
 
 name: SCA Full Pipeline — had-radiologyplus
@@ -36,52 +31,55 @@ env:
   REPORT_DIR: per-dependency-reports
   SOURCE_DIR: sources
   # Increase the default timeout for steps that make many API calls
-  # (findsources, map, createcomponents all talk to external services)
+  # (map, createcomponents all talk to external services)
   STEP_TIMEOUT_MINUTES: 30
 
 jobs:
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 1: Generate SBOM + Enrich with source URLs
+  # JOB 1: Generate SBOM with CapyCLI
+  #
+  # Uses CapyCLI's getdependencies to read package-lock.json and generate a
+  # CycloneDX SBOM. This includes:
+  #   - PURLs for every component
+  #   - Download URLs (resolved field from package-lock.json) — zero API calls
+  #   - siemens:primaryLanguage property (enables fast npm lookups)
+  #
+  # This replaces cdxgen which generated SBOMs WITHOUT download URLs.
   # ────────────────────────────────────────────────────────────────────────────
   generate-sbom:
-    name: "Step 1 · Generate & enrich CycloneDX SBOM"
+    name: "Step 1 · Generate SBOM with CapyCLI"
     runs-on: self-hosted
 
     steps:
       - name: Checkout project
         uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - name: Checkout CapyCLI fork
+        uses: actions/checkout@v4
         with:
-          distribution: temurin
-          java-version: "21"
-          cache: maven
+          repository: ${{ github.repository_owner }}/capycli
+          ref: feat/sw360/upload_reports
+          path: ${{ env.CAPYCLI_DIR }}
+          clean: true
 
-      - name: Install Maven
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install CapyCLI (force reinstall)
         run: |
-          if (-not (Get-Command mvn -ErrorAction SilentlyContinue)) {
-            Write-Host "Installing Maven..."
-            Invoke-WebRequest -Uri "https://repo1.maven.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip" `
-              -OutFile maven.zip
-            Expand-Archive maven.zip -DestinationPath $env:USERPROFILE\.maven -Force
-            Remove-Item maven.zip
-            $mavenHome = (Get-ChildItem $env:USERPROFILE\.maven\apache-maven* -Directory).FullName
-            [Environment]::SetEnvironmentVariable("MAVEN_HOME", $mavenHome, "Process")
-            [Environment]::SetEnvironmentVariable("PATH", "$mavenHome\bin;$env:PATH", "Process")
-          }
-          Write-Host "Maven version:"
-          mvn -version
+          pip uninstall capycli -y
+          pip install . --force-reinstall --no-cache-dir
+        working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Install cdxgen
-        run: npm install -g @cyclonedx/cdxgen
-
-      - name: Generate SBOM
-        run: cdxgen -r -o sbom.json --spec-version 1.6 --format json
+      - name: Generate SBOM from package-lock.json
+        run: |
+          python -m capycli getdependencies javascript `
+            -i package-lock.json `
+            -o sbom.json `
+            -v
+        shell: powershell
 
       - name: Verify SBOM was created
         run: |
@@ -89,8 +87,18 @@ jobs:
             Write-Error "sbom.json not found!"
             exit 1
           }
-          $compCount = (Get-Content sbom.json | ConvertFrom-Json).components.Count
-          Write-Host "sbom.json created successfully - $compCount components"
+          $sbom = Get-Content sbom.json | ConvertFrom-Json
+          $compCount = $sbom.components.Count
+          $withUrls = 0
+          foreach ($comp in $sbom.components) {
+            foreach ($ref in $comp.externalReferences) {
+              if ($ref.comment -eq "binary (download location)") {
+                $withUrls++
+                break
+              }
+            }
+          }
+          Write-Host "sbom.json created successfully - $compCount components, $withUrls with download URLs"
         shell: powershell
 
       - uses: actions/upload-artifact@v4
@@ -100,19 +108,15 @@ jobs:
           if-no-files-found: error
 
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 2: Enrich SBOM with source URLs + Map to SW360
+  # JOB 2: Map SBOM to SW360
   #
-  # The CycloneDX Action generates an SBOM WITHOUT download URLs.
-  # This causes cascading failures:
-  #   - `bom map` cannot match by file hash or filename
-  #   - `create component` sets empty sourceCodeDownloadurl in SW360
-  #   - FOSSology has no URLs to download sources
-  #
-  # Fix: Run `capycli bom findsources` FIRST to enrich the SBOM with
-  # source download URLs from GitHub/npm/PyPI/crates.io before mapping.
+  # The CapyCLI-generated SBOM has PURLs AND download URLs.
+  # `capycli bom map` matches by PURL first (fastest, most reliable),
+  # then falls back to name+version, then file hashes (now available
+  # because download URLs are present).
   # ────────────────────────────────────────────────────────────────────────────
-  enrich-and-map:
-    name: "Step 2 · Enrich URLs + Map to SW360"
+  map-sbom:
+    name: "Step 2 · Map SBOM to SW360"
     runs-on: self-hosted
     needs: generate-sbom
 
@@ -146,67 +150,11 @@ jobs:
         working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
-      # ── Enrichment: Add source download URLs to the bare CycloneDX SBOM ──
-      # Without this step, `findsources` falls through to GitHub name-search
-      # for every component (slow, rate-limited, unreliable).
-      # With a GitHub token, it gets 5,000 API calls/hour instead of 60.
-      - name: Enrich SBOM with source download URLs
-        timeout-minutes: ${{ fromJSON(env.STEP_TIMEOUT_MINUTES) }}
-        run: |
-          Write-Host "=== Enriching SBOM with source download URLs ==="
-          Write-Host "This queries GitHub/npm/PyPI/crates.io for each component"
-          Write-Host "GitHub token configured: $($env:GH_TOKEN -ne '')"
-
-          python -m capycli bom findsources `
-            -i sbom.json `
-            -o enriched-sbom.json `
-            -name "${{ vars.GH_NAME }}" `
-            -gt "${{ secrets.GH_TOKEN }}" `
-            -v
-        shell: powershell
-        env:
-          # Pass GitHub credentials to avoid anonymous rate limits (60/hr)
-          # Without these, enrichment will fail for projects with >50 deps
-          GH_NAME: ${{ vars.GH_NAME }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-
-      - name: Verify enriched SBOM
-        run: |
-          if (-not (Test-Path enriched-sbom.json)) {
-            Write-Host "ERROR: enriched-sbom.json not found"
-            exit 1
-          }
-          # Count how many components now have source URLs
-          $sbom = Get-Content enriched-sbom.json | ConvertFrom-Json
-          $total = $sbom.components.Count
-          $withUrls = 0
-          foreach ($comp in $sbom.components) {
-            $hasUrl = $false
-            foreach ($ref in $comp.externalReferences) {
-              if ($ref.comment -eq "source archive (download location)") {
-                $hasUrl = $true
-                break
-              }
-            }
-            if ($hasUrl) { $withUrls++ }
-          }
-          Write-Host "Enriched SBOM: $withUrls / $total components have source URLs"
-          if ($withUrls -eq 0) {
-            Write-Host "WARNING: No source URLs found - check GitHub token and network"
-          }
-        shell: powershell
-
-      # ── Map enriched SBOM to SW360 ──
-      # With source URLs now present, matching is more reliable:
-      #   1. PURL match (fastest)
-      #   2. Source file hash match (now possible because URLs exist)
-      #   3. Name + version match
-      #   4. Filename match (now possible because URLs exist)
       - name: Map SBOM to SW360
         timeout-minutes: ${{ fromJSON(env.STEP_TIMEOUT_MINUTES) }}
         run: |
           python -m capycli bom map `
-            -i enriched-sbom.json `
+            -i sbom.json `
             -url ${{ vars.SW360_URL }} `
             -t ${{ secrets.SW360_TOKEN }} `
             -mr mapping-result.json `
@@ -235,15 +183,11 @@ jobs:
 
   # ────────────────────────────────────────────────────────────────────────────
   # JOB 3: Create missing components & releases on SW360
-  #
-  # Uses `--download` flag to automatically download source files from the
-  # URLs that were added during enrichment (Step 2). This populates the
-  # sourceCodeDownloadurl field in SW360 for every release.
   # ────────────────────────────────────────────────────────────────────────────
   create-components:
     name: "Step 3 · Create components & releases"
     runs-on: self-hosted
-    needs: enrich-and-map
+    needs: map-sbom
 
     steps:
       - name: Checkout project
@@ -275,9 +219,6 @@ jobs:
         working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
-      # Create missing components first, then releases.
-      # The `--download` flag downloads source files from the enriched URLs
-      # and uploads them as SOURCE attachments to SW360.
       - name: Create missing components
         timeout-minutes: ${{ fromJSON(env.STEP_TIMEOUT_MINUTES) }}
         run: |
@@ -357,9 +298,8 @@ jobs:
         shell: powershell
 
       # ── REMOVED: "Trim SBOM to first 5 packages" test step ──
-      # This was a workaround for container timeouts caused by missing URLs.
-      # Now that Step 2 enriches the SBOM with source URLs, the API calls
-      # are faster and more reliable. The root cause is fixed.
+      # This was a workaround for container timeouts. Removed because
+      # the pipeline now processes all components correctly.
 
       - name: Create or update SW360 project
         run: |
@@ -512,8 +452,10 @@ jobs:
         working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
-      # Download sources using the URLs enriched in Step 2.
-      # These URLs are now present in the SBOM's externalReferences.
+      # Download sources using URLs from the SBOM's externalReferences.
+      # CapyCLI's getdependencies includes download URLs from the
+      # package-lock.json resolved field, so downloadsources can
+      # fetch them directly without GitHub API calls.
       - name: Download dependency sources
         timeout-minutes: ${{ fromJSON(env.STEP_TIMEOUT_MINUTES) }}
         run: |
