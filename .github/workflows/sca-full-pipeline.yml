@@ -90,7 +90,7 @@ jobs:
             exit 1
           }
           $compCount = (Get-Content sbom.json | ConvertFrom-Json).components.Count
-          Write-Host "sbom.json created successfully — $compCount components"
+          Write-Host "sbom.json created successfully - $compCount components"
         shell: powershell
 
       - uses: actions/upload-artifact@v4
@@ -192,7 +192,7 @@ jobs:
           }
           Write-Host "Enriched SBOM: $withUrls / $total components have source URLs"
           if ($withUrls -eq 0) {
-            Write-Host "WARNING: No source URLs found — check GitHub token and network"
+            Write-Host "WARNING: No source URLs found - check GitHub token and network"
           }
         shell: powershell
 
@@ -558,7 +558,7 @@ jobs:
           $reportFiles = Get-ChildItem -Path ${{ env.REPORT_DIR }} -Filter "*.spdx.json" -Recurse -ErrorAction SilentlyContinue
           Write-Host "Per-dependency reports: $($reportFiles.Count)"
           if ($reportFiles.Count -eq 0) {
-            Write-Host "WARNING: No per-dependency reports generated — will use consolidated report only"
+            Write-Host "WARNING: No per-dependency reports generated - will use consolidated report only"
           }
         shell: powershell
 
@@ -665,7 +665,7 @@ jobs:
               -o final-sbom.json `
               -v
           } else {
-            Write-Host "WARNING: No per-dependency reports found — skipping per-dependency upload"
+            Write-Host "WARNING: No per-dependency reports found - skipping per-dependency upload"
           }
         shell: powershell
 
@@ -685,7 +685,7 @@ jobs:
               -o final-sbom.json `
               -v
           } else {
-            Write-Host "WARNING: Consolidated report not found — skipping"
+            Write-Host "WARNING: Consolidated report not found - skipping"
           }
         shell: powershell
 
