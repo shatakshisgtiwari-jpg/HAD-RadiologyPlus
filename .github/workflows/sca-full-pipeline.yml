@@ -377,7 +377,7 @@ jobs:
   # JOB 5: Download sources + Fossology scan
   # ──────────────────────────────────────────────────────────
   scan-fossology:
-    name: "Step 5-6 · Download sources & Scan"
+    name: "Step 5 · Download sources & Scan"
     runs-on: self-hosted
     needs: create-project
 
@@ -473,7 +473,7 @@ jobs:
   # JOB 6: Upload sources & reports to SW360
   # ──────────────────────────────────────────────────────────
   upload-to-sw360:
-    name: "Step 7-8 · Upload to SW360"
+    name: "Step 6 · Upload to SW360"
     runs-on: self-hosted
     needs: scan-fossology
 
@@ -575,7 +575,7 @@ jobs:
   # JOB 7: Validate pipeline completeness
   # ──────────────────────────────────────────────────────────
   validate-pipeline:
-    name: "Step 9 · Validate pipeline"
+    name: "Step 7 · Validate pipeline"
     runs-on: self-hosted
     needs: upload-to-sw360
 
