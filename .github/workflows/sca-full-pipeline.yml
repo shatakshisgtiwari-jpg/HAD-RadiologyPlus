@@ -6,8 +6,7 @@
 # and validates completeness.
 #
 # Key improvements over the original:
-#   1. Replaced cdxgen with CapyCLI getdependencies — reads download URLs
-#      directly from package-lock.json (zero API calls, no timeout)
+#   1. Uses cdxgen for SBOM generation (project has no package-lock.json)
 #   2. Removed the dangerous "Trim SBOM to first 5 packages" test step
 #   3. Consolidated report uploaded alongside per-dependency reports
 #   4. Better timeout handling and error reporting
@@ -36,50 +35,50 @@ env:
 
 jobs:
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 1: Generate SBOM with CapyCLI
+  # JOB 1: Generate SBOM with cdxgen
   #
-  # Uses CapyCLI's getdependencies to read package-lock.json and generate a
-  # CycloneDX SBOM. This includes:
-  #   - PURLs for every component
-  #   - Download URLs (resolved field from package-lock.json) — zero API calls
-  #   - siemens:primaryLanguage property (enables fast npm lookups)
-  #
-  # This replaces cdxgen which generated SBOMs WITHOUT download URLs.
+  # Uses cdxgen to recursively scan the project and generate a CycloneDX SBOM.
+  # cdxgen includes PURLs for every component which enables SW360 matching.
   # ────────────────────────────────────────────────────────────────────────────
   generate-sbom:
-    name: "Step 1 · Generate SBOM with CapyCLI"
+    name: "Step 1 · Generate CycloneDX SBOM"
     runs-on: self-hosted
 
     steps:
       - name: Checkout project
         uses: actions/checkout@v4
 
-      - name: Checkout CapyCLI fork
-        uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
-          repository: ${{ github.repository_owner }}/capycli
-          ref: feat/sw360/upload_reports
-          path: ${{ env.CAPYCLI_DIR }}
-          clean: true
+          distribution: temurin
+          java-version: "21"
+          cache: maven
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install CapyCLI (force reinstall)
+      - name: Install Maven
         run: |
-          pip uninstall capycli -y
-          pip install . --force-reinstall --no-cache-dir
-        working-directory: ${{ env.CAPYCLI_DIR }}
+          if (-not (Get-Command mvn -ErrorAction SilentlyContinue)) {
+            Write-Host "Installing Maven..."
+            Invoke-WebRequest -Uri "https://repo1.maven.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip" `
+              -OutFile maven.zip
+            Expand-Archive maven.zip -DestinationPath $env:USERPROFILE\.maven -Force
+            Remove-Item maven.zip
+            $mavenHome = (Get-ChildItem $env:USERPROFILE\.maven\apache-maven* -Directory).FullName
+            [Environment]::SetEnvironmentVariable("MAVEN_HOME", $mavenHome, "Process")
+            [Environment]::SetEnvironmentVariable("PATH", "$mavenHome\bin;$env:PATH", "Process")
+          }
+          Write-Host "Maven version:"
+          mvn -version
         shell: powershell
 
-      - name: Generate SBOM from package-lock.json
-        run: |
-          python -m capycli getdependencies javascript `
-            -i package-lock.json `
-            -o sbom.json `
-            -v
-        shell: powershell
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install cdxgen
+        run: npm install -g @cyclonedx/cdxgen
+
+      - name: Generate SBOM
+        run: cdxgen -r -o sbom.json --spec-version 1.6 --format json
 
       - name: Verify SBOM was created
         run: |
@@ -87,18 +86,8 @@ jobs:
             Write-Error "sbom.json not found!"
             exit 1
           }
-          $sbom = Get-Content sbom.json | ConvertFrom-Json
-          $compCount = $sbom.components.Count
-          $withUrls = 0
-          foreach ($comp in $sbom.components) {
-            foreach ($ref in $comp.externalReferences) {
-              if ($ref.comment -eq "binary (download location)") {
-                $withUrls++
-                break
-              }
-            }
-          }
-          Write-Host "sbom.json created successfully - $compCount components, $withUrls with download URLs"
+          $compCount = (Get-Content sbom.json | ConvertFrom-Json).components.Count
+          Write-Host "sbom.json created successfully - $compCount components"
         shell: powershell
 
       - uses: actions/upload-artifact@v4
@@ -110,10 +99,9 @@ jobs:
   # ────────────────────────────────────────────────────────────────────────────
   # JOB 2: Map SBOM to SW360
   #
-  # The CapyCLI-generated SBOM has PURLs AND download URLs.
+  # cdxgen generates PURLs for every component.
   # `capycli bom map` matches by PURL first (fastest, most reliable),
-  # then falls back to name+version, then file hashes (now available
-  # because download URLs are present).
+  # then falls back to name+version.
   # ────────────────────────────────────────────────────────────────────────────
   map-sbom:
     name: "Step 2 · Map SBOM to SW360"
@@ -452,10 +440,9 @@ jobs:
         working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
-      # Download sources using URLs from the SBOM's externalReferences.
-      # CapyCLI's getdependencies includes download URLs from the
-      # package-lock.json resolved field, so downloadsources can
-      # fetch them directly without GitHub API calls.
+      # Download dependency sources from URLs in the SBOM.
+      # cdxgen may include download URLs; if not, downloadsources
+      # will attempt to find them from component metadata.
       - name: Download dependency sources
         timeout-minutes: ${{ fromJSON(env.STEP_TIMEOUT_MINUTES) }}
         run: |
