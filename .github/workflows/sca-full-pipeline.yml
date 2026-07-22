@@ -1,15 +1,724 @@
+# # ──────────────────────────────────────────────────────────────────────────────
+# # SCA Full Pipeline — had-radiologyplus
+# #
+# # Generates a CycloneDX SBOM, maps to SW360, creates missing components/releases,
+# # runs FOSSology scans (per-dependency), uploads all artifacts to SW360,
+# # and validates completeness.
+# #
+# # Key improvements over the original:
+# #   1. Uses cdxgen for SBOM generation (project has no package-lock.json)
+# #   2. Removed the dangerous "Trim SBOM to first 5 packages" test step
+# #   3. Consolidated report uploaded alongside per-dependency reports
+# #   4. Better timeout handling and error reporting
+# # ──────────────────────────────────────────────────────────────────────────────
+
+# name: SCA Full Pipeline — had-radiologyplus
+
+# on:
+#   push:
+#     branches: [ main, master, develop ]
+#   workflow_dispatch:    # manual trigger
+
+# permissions:
+#   contents: read
+#   actions: write
+
+# env:
+#   PROJECT_NAME: had-radiologyplus
+#   PROJECT_VERSION: "1.0.0"
+#   CAPYCLI_DIR: capycli-fork
+#   REPORT_DIR: per-dependency-reports
+#   SOURCE_DIR: sources
+#   # Increase the default timeout for steps that make many API calls
+#   # (map, createcomponents all talk to external services)
+#   STEP_TIMEOUT_MINUTES: 30
+
+# jobs:
+#   # ────────────────────────────────────────────────────────────────────────────
+#   # JOB 1: Generate SBOM with cdxgen
+#   #
+#   # Uses cdxgen to recursively scan the project and generate a CycloneDX SBOM.
+#   # cdxgen includes PURLs for every component which enables SW360 matching.
+#   # ────────────────────────────────────────────────────────────────────────────
+#   generate-sbom:
+#     name: "Step 1 · Generate CycloneDX SBOM"
+#     runs-on: self-hosted
+
+#     steps:
+#       - name: Checkout project
+#         uses: actions/checkout@v4
+
+#       - uses: actions/setup-java@v4
+#         with:
+#           distribution: temurin
+#           java-version: "21"
+#           cache: maven
+
+#       - name: Install Maven
+#         run: |
+#           if (-not (Get-Command mvn -ErrorAction SilentlyContinue)) {
+#             Write-Host "Installing Maven..."
+#             Invoke-WebRequest -Uri "https://repo1.maven.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip" `
+#               -OutFile maven.zip
+#             Expand-Archive maven.zip -DestinationPath $env:USERPROFILE\.maven -Force
+#             Remove-Item maven.zip
+#             $mavenHome = (Get-ChildItem $env:USERPROFILE\.maven\apache-maven* -Directory).FullName
+#             [Environment]::SetEnvironmentVariable("MAVEN_HOME", $mavenHome, "Process")
+#             [Environment]::SetEnvironmentVariable("PATH", "$mavenHome\bin;$env:PATH", "Process")
+#           }
+#           Write-Host "Maven version:"
+#           mvn -version
+#         shell: powershell
+
+#       - uses: actions/setup-node@v4
+#         with:
+#           node-version: "22"
+
+#       - name: Install cdxgen
+#         run: npm install -g @cyclonedx/cdxgen
+
+#       - name: Generate SBOM
+#         run: cdxgen -r -o sbom.json --spec-version 1.6 --format json
+
+#       - name: Verify SBOM was created
+#         run: |
+#           if (-not (Test-Path sbom.json)) {
+#             Write-Error "sbom.json not found!"
+#             exit 1
+#           }
+#           $compCount = (Get-Content sbom.json | ConvertFrom-Json).components.Count
+#           Write-Host "sbom.json created successfully - $compCount components"
+#         shell: powershell
+
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: sbom
+#           path: sbom.json
+#           if-no-files-found: error
+
+#   # ────────────────────────────────────────────────────────────────────────────
+#   # JOB 2: Map SBOM to SW360
+#   #
+#   # cdxgen generates PURLs for every component.
+#   # `capycli bom map` matches by PURL first (fastest, most reliable),
+#   # then falls back to name+version.
+#   # ────────────────────────────────────────────────────────────────────────────
+#   map-sbom:
+#     name: "Step 2 · Map SBOM to SW360"
+#     runs-on: self-hosted
+#     needs: generate-sbom
+
+#     steps:
+#       - name: Checkout project
+#         uses: actions/checkout@v4
+#         with:
+#           clean: true
+
+#       - name: Download SBOM artifact
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: sbom
+
+#       - name: Checkout CapyCLI fork
+#         uses: actions/checkout@v4
+#         with:
+#           repository: ${{ github.repository_owner }}/capycli
+#           ref: feat/sw360/upload_reports
+#           path: ${{ env.CAPYCLI_DIR }}
+#           clean: true
+
+#       - uses: actions/setup-python@v5
+#         with:
+#           python-version: "3.11"
+
+#       - name: Install CapyCLI (force reinstall)
+#         run: |
+#           pip uninstall capycli -y
+#           pip install . --force-reinstall --no-cache-dir
+#         working-directory: ${{ env.CAPYCLI_DIR }}
+#         shell: powershell
+
+#       - name: Map SBOM to SW360
+#         timeout-minutes: ${{ fromJSON(env.STEP_TIMEOUT_MINUTES) }}
+#         run: |
+#           python -m capycli bom map `
+#             -i sbom.json `
+#             -url ${{ vars.SW360_URL }} `
+#             -t ${{ secrets.SW360_TOKEN }} `
+#             -mr mapping-result.json `
+#             -o mapped-sbom.json `
+#             --matchmode full-search,all-versions `
+#             -v
+#         shell: powershell
+
+#       - name: Verify mapped SBOM
+#         run: |
+#           if (-not (Test-Path mapped-sbom.json)) {
+#             Write-Host "ERROR: mapped-sbom.json not found"
+#             exit 1
+#           }
+#           Write-Host "mapped-sbom.json created successfully"
+#         shell: powershell
+
+#       - name: Upload mapped SBOM
+#         if: always()
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: mapped-sbom
+#           path: |
+#             mapped-sbom.json
+#             mapping-result.json
+
+#   # ────────────────────────────────────────────────────────────────────────────
+#   # JOB 3: Create missing components & releases on SW360
+#   # ────────────────────────────────────────────────────────────────────────────
+#   create-components:
+#     name: "Step 3 · Create components & releases"
+#     runs-on: self-hosted
+#     needs: map-sbom
+
+#     steps:
+#       - name: Checkout project
+#         uses: actions/checkout@v4
+#         with:
+#           clean: true
+
+#       - name: Download mapped SBOM
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: mapped-sbom
+
+#       - name: Checkout CapyCLI fork
+#         uses: actions/checkout@v4
+#         with:
+#           repository: ${{ github.repository_owner }}/capycli
+#           ref: feat/sw360/upload_reports
+#           path: ${{ env.CAPYCLI_DIR }}
+#           clean: true
+
+#       - uses: actions/setup-python@v5
+#         with:
+#           python-version: "3.11"
+
+#       - name: Install CapyCLI (force reinstall)
+#         run: |
+#           pip uninstall capycli -y
+#           pip install . --force-reinstall --no-cache-dir
+#         working-directory: ${{ env.CAPYCLI_DIR }}
+#         shell: powershell
+
+#       - name: Create missing components
+#         timeout-minutes: ${{ fromJSON(env.STEP_TIMEOUT_MINUTES) }}
+#         run: |
+#           python -m capycli bom createcomponents `
+#             -i mapped-sbom.json `
+#             -o created-sbom.json `
+#             -url ${{ vars.SW360_URL }} `
+#             -t ${{ secrets.SW360_TOKEN }} `
+#             --download `
+#             -v
+#         shell: powershell
+
+#       - name: Create missing releases
+#         timeout-minutes: ${{ fromJSON(env.STEP_TIMEOUT_MINUTES) }}
+#         run: |
+#           python -m capycli bom createreleases `
+#             -i created-sbom.json `
+#             -o created-sbom.json `
+#             -url ${{ vars.SW360_URL }} `
+#             -t ${{ secrets.SW360_TOKEN }} `
+#             -v
+#         shell: powershell
+
+#       - name: Verify created SBOM
+#         run: |
+#           if (-not (Test-Path created-sbom.json)) {
+#             Write-Host "ERROR: created-sbom.json not found"
+#             exit 1
+#           }
+#           $size = (Get-Item created-sbom.json).Length
+#           Write-Host "created-sbom.json created successfully ($size bytes)"
+#         shell: powershell
+
+#       - name: Upload created SBOM
+#         if: always()
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: created-sbom
+#           path: created-sbom.json
+
+#   # ────────────────────────────────────────────────────────────────────────────
+#   # JOB 4: Create/update SW360 project + Capture project ID
+#   # ────────────────────────────────────────────────────────────────────────────
+#   create-project:
+#     name: "Step 4 · Create/update SW360 project"
+#     runs-on: self-hosted
+#     needs: create-components
+
+#     steps:
+#       - name: Checkout project
+#         uses: actions/checkout@v4
+#         with:
+#           clean: true
+
+#       - name: Download created SBOM
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: created-sbom
+
+#       - name: Checkout CapyCLI fork
+#         uses: actions/checkout@v4
+#         with:
+#           repository: ${{ github.repository_owner }}/capycli
+#           ref: feat/sw360/upload_reports
+#           path: ${{ env.CAPYCLI_DIR }}
+#           clean: true
+
+#       - uses: actions/setup-python@v5
+#         with:
+#           python-version: "3.11"
+
+#       - name: Install CapyCLI (force reinstall)
+#         run: |
+#           pip uninstall capycli -y
+#           pip install . --force-reinstall --no-cache-dir
+#         working-directory: ${{ env.CAPYCLI_DIR }}
+#         shell: powershell
+
+#       # ── REMOVED: "Trim SBOM to first 5 packages" test step ──
+#       # This was a workaround for container timeouts. Removed because
+#       # the pipeline now processes all components correctly.
+
+#       - name: Create or update SW360 project
+#         run: |
+#           python -m capycli project create `
+#             -i created-sbom.json `
+#             -url ${{ vars.SW360_URL }} `
+#             -t ${{ secrets.SW360_TOKEN }} `
+#             -name "${{ env.PROJECT_NAME }}" `
+#             -version "${{ env.PROJECT_VERSION }}" `
+#             -source had-radiologyplus-project-info.json `
+#             -v
+#         shell: powershell
+
+#       - name: Capture SW360 project ID
+#         id: get-project-id
+#         run: |
+#           Write-Host "=== Capturing SW360 project ID ==="
+#           $projectId = $null
+
+#           # Method 1: Try capycli project find (search by name)
+#           Write-Host "Method 1: Searching via capycli project find..."
+#           $output = python -m capycli project find `
+#             -name "${{ env.PROJECT_NAME }}" `
+#             -url ${{ vars.SW360_URL }} `
+#             -t ${{ secrets.SW360_TOKEN }} 2>&1
+#           $null = $LASTEXITCODE
+#           $match = ($output | Select-String -Pattern '([a-f0-9]{32})' -AllMatches)
+#           if ($match -and $match.Matches.Count -gt 0) {
+#             $projectId = $match.Matches.Groups[1].Value
+#             Write-Host "Found project ID via search: $projectId"
+#           }
+
+#           # Method 2: Query SW360 API directly
+#           if (-not $projectId) {
+#             Write-Host "Method 2: Querying SW360 API directly..."
+#             try {
+#               $token = "${{ secrets.SW360_TOKEN }}"
+#               $url = "${{ vars.SW360_URL }}"
+#               $searchUrl = "$url/resource/api/search?type=project&searchText=${{ env.PROJECT_NAME }}&pagination=0&elements=10"
+#               $response = Invoke-RestMethod -Uri $searchUrl -Headers @{
+#                 "X-CSRF-Token" = "$token"
+#                 "Authorization" = "Token $token"
+#               } -ErrorAction Stop
+#               if ($response._embedded -and $response._embedded."sw360:projects") {
+#                 foreach ($proj in $response._embedded."sw360:projects") {
+#                   if ($proj.name -eq "${{ env.PROJECT_NAME }}" -and $proj.version -eq "${{ env.PROJECT_VERSION }}") {
+#                     $href = $proj._links.self.href
+#                     $projectId = $href.Split('/')[-1]
+#                     Write-Host "Found project ID via API: $projectId"
+#                     break
+#                   }
+#                 }
+#               }
+#             } catch {
+#               Write-Host "API query failed: $($_.Exception.Message)"
+#             }
+#           }
+
+#           # Method 3: List all projects
+#           if (-not $projectId) {
+#             Write-Host "Method 3: Listing all projects..."
+#             try {
+#               $token = "${{ secrets.SW360_TOKEN }}"
+#               $url = "${{ vars.SW360_URL }}"
+#               $listUrl = "$url/resource/api/projects?pagination=0&elements=50"
+#               $response = Invoke-RestMethod -Uri $listUrl -Headers @{
+#                 "X-CSRF-Token" = "$token"
+#                 "Authorization" = "Token $token"
+#               } -ErrorAction Stop
+#               if ($response._embedded -and $response._embedded."sw360:projects") {
+#                 foreach ($proj in $response._embedded."sw360:projects") {
+#                   if ($proj.name -eq "${{ env.PROJECT_NAME }}" -and $proj.version -eq "${{ env.PROJECT_VERSION }}") {
+#                     $href = $proj._links.self.href
+#                     $projectId = $href.Split('/')[-1]
+#                     Write-Host "Found project ID via listing: $projectId"
+#                     break
+#                   }
+#                 }
+#               }
+#             } catch {
+#               Write-Host "Project listing failed: $($_.Exception.Message)"
+#             }
+#           }
+
+#           if ($projectId) {
+#             Write-Host "SUCCESS: Project ID = $projectId"
+#             Add-Content -Path $env:GITHUB_OUTPUT -Value "project_id=$projectId"
+#           } else {
+#             Write-Host "ERROR: Could not find project ID"
+#             exit 1
+#           }
+#           exit 0
+#         shell: powershell
+
+#       - name: Save project ID to file
+#         run: |
+#           $projectId = "${{ steps.get-project-id.outputs.project_id }}"
+#           $projectId | Out-File -FilePath project-id.txt -Encoding UTF8
+#         shell: powershell
+
+#       - name: Upload project ID
+#         if: always()
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: project-id
+#           path: project-id.txt
+
+#       - name: Upload created SBOM for downstream jobs
+#         if: always()
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: created-sbom-forward
+#           path: created-sbom.json
+
+#   # ────────────────────────────────────────────────────────────────────────────
+#   # JOB 5: Download sources + FOSSology scan
+#   # ────────────────────────────────────────────────────────────────────────────
+#   scan-fossology:
+#     name: "Step 5 · Download sources & Scan"
+#     runs-on: self-hosted
+#     needs: create-project
+
+#     steps:
+#       - name: Checkout project
+#         uses: actions/checkout@v4
+#         with:
+#           clean: true
+
+#       - name: Download created SBOM
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: created-sbom-forward
+
+#       - name: Checkout CapyCLI fork
+#         uses: actions/checkout@v4
+#         with:
+#           repository: ${{ github.repository_owner }}/capycli
+#           ref: feat/sw360/upload_reports
+#           path: ${{ env.CAPYCLI_DIR }}
+#           clean: true
+
+#       - uses: actions/setup-python@v5
+#         with:
+#           python-version: "3.11"
+
+#       - name: Install CapyCLI (force reinstall)
+#         run: |
+#           pip uninstall capycli -y
+#           pip install . --force-reinstall --no-cache-dir
+#         working-directory: ${{ env.CAPYCLI_DIR }}
+#         shell: powershell
+
+#       # Download dependency sources from URLs in the SBOM.
+#       # cdxgen may include download URLs; if not, downloadsources
+#       # will attempt to find them from component metadata.
+#       - name: Download dependency sources
+#         timeout-minutes: ${{ fromJSON(env.STEP_TIMEOUT_MINUTES) }}
+#         run: |
+#           if (-not (Test-Path ${{ env.SOURCE_DIR }})) {
+#             New-Item -ItemType Directory -Path ${{ env.SOURCE_DIR }} | Out-Null
+#           }
+#           python -m capycli bom downloadsources `
+#             -i created-sbom.json `
+#             -source ${{ env.SOURCE_DIR }} `
+#             -o sourced-sbom.json `
+#             -v
+#         shell: powershell
+
+#       - name: Verify sourced SBOM
+#         run: |
+#           if (-not (Test-Path sourced-sbom.json)) {
+#             Write-Host "ERROR: sourced-sbom.json not found"
+#             exit 1
+#           }
+#           Write-Host "sourced-sbom.json created successfully ($(Get-Item sourced-sbom.json).Length bytes)"
+#         shell: powershell
+
+#       - name: Run FOSSology analysis
+#         id: fossology
+#         uses: shatakshisgtiwari-jpg/fossology-action@feat/action/per-dependency-report
+#         with:
+#           scan_mode: "scan-only-deps"
+#           scanners: "ojo copyright"
+#           report_format: "SPDX_JSON"
+#           sbom_path: "created-sbom.json"
+#           per_dependency_report: "true"
+#           report_dir: ${{ env.REPORT_DIR }}
+
+#       - name: Verify FOSSology output
+#         run: |
+#           if (-not (Test-Path "results/sbom_spdx.json")) {
+#             Write-Host "ERROR: results/sbom_spdx.json not found"
+#             exit 1
+#           }
+#           $size = (Get-Item "results/sbom_spdx.json").Length
+#           Write-Host "OK: results/sbom_spdx.json exists ($size bytes)"
+#           $reportFiles = Get-ChildItem -Path ${{ env.REPORT_DIR }} -Filter "*.spdx.json" -Recurse -ErrorAction SilentlyContinue
+#           Write-Host "Per-dependency reports: $($reportFiles.Count)"
+#           if ($reportFiles.Count -eq 0) {
+#             Write-Host "WARNING: No per-dependency reports generated - will use consolidated report only"
+#           }
+#         shell: powershell
+
+#       - name: Upload scan artifacts
+#         if: always()
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: scan-artifacts
+#           path: |
+#             sourced-sbom.json
+#             results/
+#             ${{ env.REPORT_DIR }}/
+
+#   # ────────────────────────────────────────────────────────────────────────────
+#   # JOB 6: Upload sources & reports to SW360
+#   # ────────────────────────────────────────────────────────────────────────────
+#   upload-to-sw360:
+#     name: "Step 6 · Upload to SW360"
+#     runs-on: self-hosted
+#     needs: scan-fossology
+
+#     steps:
+#       - name: Checkout project
+#         uses: actions/checkout@v4
+#         with:
+#           clean: true
+
+#       - name: Download scan artifacts
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: scan-artifacts
+#           path: scan-output
+
+#       - name: Checkout CapyCLI fork
+#         uses: actions/checkout@v4
+#         with:
+#           repository: ${{ github.repository_owner }}/capycli
+#           ref: feat/sw360/upload_reports
+#           path: ${{ env.CAPYCLI_DIR }}
+#           clean: true
+
+#       - uses: actions/setup-python@v5
+#         with:
+#           python-version: "3.11"
+
+#       - name: Install CapyCLI (force reinstall)
+#         run: |
+#           pip uninstall capycli -y
+#           pip install . --force-reinstall --no-cache-dir
+#         working-directory: ${{ env.CAPYCLI_DIR }}
+#         shell: powershell
+
+#       - name: Restore files to working directory
+#         run: |
+#           Copy-Item "scan-output/sourced-sbom.json" -Destination "sourced-sbom.json" -Force
+#           if (Test-Path "scan-output/results") {
+#             Copy-Item "scan-output/results" -Destination "results" -Recurse -Force
+#           }
+#           if (Test-Path "scan-output/${{ env.REPORT_DIR }}") {
+#             Copy-Item "scan-output/${{ env.REPORT_DIR }}" -Destination "${{ env.REPORT_DIR }}" -Recurse -Force
+#           }
+#           if (Test-Path "scan-output/sources") {
+#             Copy-Item "scan-output/sources" -Destination "sources" -Recurse -Force
+#           }
+#         shell: powershell
+
+#       - name: Attach source files to SW360 releases
+#         timeout-minutes: ${{ fromJSON(env.STEP_TIMEOUT_MINUTES) }}
+#         run: |
+#           python -m capycli bom createreleases `
+#             -i sourced-sbom.json `
+#             -o final-sbom.json `
+#             -url ${{ vars.SW360_URL }} `
+#             -t ${{ secrets.SW360_TOKEN }} `
+#             -source ${{ env.SOURCE_DIR }} `
+#             -v
+#         shell: powershell
+
+#       - name: Verify final SBOM
+#         run: |
+#           if (-not (Test-Path final-sbom.json)) {
+#             Write-Host "ERROR: final-sbom.json not found"
+#             exit 1
+#           }
+#           Write-Host "final-sbom.json created successfully ($(Get-Item final-sbom.json).Length bytes)"
+#         shell: powershell
+
+#       # Upload per-dependency scan reports to SW360
+#       - name: Upload per-dependency scan reports to SW360
+#         timeout-minutes: ${{ fromJSON(env.STEP_TIMEOUT_MINUTES) }}
+#         run: |
+#           $reportFiles = Get-ChildItem -Path ${{ env.REPORT_DIR }} -Filter "*.spdx.json" -Recurse -ErrorAction SilentlyContinue
+#           $reportCount = $reportFiles.Count
+#           Write-Host "Per-dependency reports found: $reportCount"
+
+#           if ($reportCount -gt 0) {
+#             python -m capycli bom uploadreports `
+#               -i final-sbom.json `
+#               --report-dir ${{ env.REPORT_DIR }} `
+#               --filetype COMPONENT_LICENSE_INFO_XML `
+#               --comment "Fossology SPDX scan - ${{ env.PROJECT_NAME }} ${{ env.PROJECT_VERSION }}" `
+#               -url ${{ vars.SW360_URL }} `
+#               -t ${{ secrets.SW360_TOKEN }} `
+#               -o final-sbom.json `
+#               -v
+#           } else {
+#             Write-Host "WARNING: No per-dependency reports found - skipping per-dependency upload"
+#           }
+#         shell: powershell
+
+#       # Also upload the consolidated report as a fallback
+#       - name: Upload consolidated scan report to SW360
+#         timeout-minutes: ${{ fromJSON(env.STEP_TIMEOUT_MINUTES) }}
+#         run: |
+#           if (Test-Path "results/sbom_spdx.json") {
+#             Write-Host "Uploading consolidated report to all releases..."
+#             python -m capycli bom uploadreports `
+#               -i final-sbom.json `
+#               --report-file results/sbom_spdx.json `
+#               --filetype COMPONENT_LICENSE_INFO_XML `
+#               --comment "Consolidated Fossology SPDX scan - ${{ env.PROJECT_NAME }} ${{ env.PROJECT_VERSION }}" `
+#               -url ${{ vars.SW360_URL }} `
+#               -t ${{ secrets.SW360_TOKEN }} `
+#               -o final-sbom.json `
+#               -v
+#           } else {
+#             Write-Host "WARNING: Consolidated report not found - skipping"
+#           }
+#         shell: powershell
+
+#       - name: Upload final SBOM
+#         if: always()
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: final-sbom
+#           path: final-sbom.json
+
+#   # ────────────────────────────────────────────────────────────────────────────
+#   # JOB 7: Validate pipeline completeness
+#   # ────────────────────────────────────────────────────────────────────────────
+#   validate-pipeline:
+#     name: "Step 7 · Validate pipeline"
+#     runs-on: self-hosted
+#     needs: upload-to-sw360
+
+#     steps:
+#       - name: Checkout project
+#         uses: actions/checkout@v4
+#         with:
+#           clean: true
+
+#       - name: Download final SBOM
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: final-sbom
+
+#       - name: Download project ID
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: project-id
+
+#       - name: Checkout CapyCLI fork
+#         uses: actions/checkout@v4
+#         with:
+#           repository: ${{ github.repository_owner }}/capycli
+#           ref: feat/sw360/upload_reports
+#           path: ${{ env.CAPYCLI_DIR }}
+#           clean: true
+
+#       - uses: actions/setup-python@v5
+#         with:
+#           python-version: "3.11"
+
+#       - name: Install CapyCLI (force reinstall)
+#         run: |
+#           pip uninstall capycli -y
+#           pip install . --force-reinstall --no-cache-dir
+#         working-directory: ${{ env.CAPYCLI_DIR }}
+#         shell: powershell
+
+#       - name: Validate pipeline completeness
+#         run: |
+#           $projectId = Get-Content -Path project-id.txt -Raw.Trim()
+#           if (-not $projectId) {
+#             Write-Host "ERROR: Project ID not available"
+#             exit 1
+#           }
+
+#           python -m capycli project prerequisites `
+#             -i final-sbom.json `
+#             -id $projectId `
+#             -url ${{ vars.SW360_URL }} `
+#             -t ${{ secrets.SW360_TOKEN }} `
+#             --check-reports `
+#             --forceerror `
+#             -v
+#         shell: powershell
+
+#       - name: Upload all final artifacts
+#         if: always()
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: all-sbom-artifacts
+#           path: |
+#             final-sbom.json
+
+#       - name: Upload FOSSology reports
+#         if: always()
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: fossology-reports
+#           path: |
+#             results/
+#             ${{ env.REPORT_DIR }}/
+#           if-no-files-found: warn
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # SCA Full Pipeline — had-radiologyplus
 #
-# Generates a CycloneDX SBOM, maps to SW360, creates missing components/releases,
-# runs FOSSology scans (per-dependency), uploads all artifacts to SW360,
+# Generates a CycloneDX SBOM, enriches it with download URLs from package
+# registries, maps to SW360, creates missing components/releases, runs
+# FOSSology scans (per-dependency), uploads all artifacts to SW360,
 # and validates completeness.
 #
-# Key improvements over the original:
-#   1. Uses cdxgen for SBOM generation (project has no package-lock.json)
-#   2. Removed the dangerous "Trim SBOM to first 5 packages" test step
-#   3. Consolidated report uploaded alongside per-dependency reports
-#   4. Better timeout handling and error reporting
+# Key design principles:
+#   1. Uses registry APIs (npm, PyPI, crates.io) — NOT GitHub API
+#      - No rate limits, no authentication needed
+#      - Threaded parallel execution for speed
+#   2. Download URLs are essential for FOSSology source scanning
+#   3. Generic — works with ANY project, ANY ecosystem
 # ──────────────────────────────────────────────────────────────────────────────
 
 name: SCA Full Pipeline — had-radiologyplus
@@ -29,16 +738,10 @@ env:
   CAPYCLI_DIR: capycli-fork
   REPORT_DIR: per-dependency-reports
   SOURCE_DIR: sources
-  # Increase the default timeout for steps that make many API calls
-  # (map, createcomponents all talk to external services)
-  STEP_TIMEOUT_MINUTES: 30
 
 jobs:
   # ────────────────────────────────────────────────────────────────────────────
   # JOB 1: Generate SBOM with cdxgen
-  #
-  # Uses cdxgen to recursively scan the project and generate a CycloneDX SBOM.
-  # cdxgen includes PURLs for every component which enables SW360 matching.
   # ────────────────────────────────────────────────────────────────────────────
   generate-sbom:
     name: "Step 1 · Generate CycloneDX SBOM"
@@ -97,14 +800,18 @@ jobs:
           if-no-files-found: error
 
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 2: Map SBOM to SW360
+  # JOB 2: Enrich SBOM with download URLs + Map to SW360
   #
-  # cdxgen generates PURLs for every component.
-  # `capycli bom map` matches by PURL first (fastest, most reliable),
-  # then falls back to name+version.
+  # Uses enrich_sbom_urls.py to query package registries (npm, PyPI, crates.io)
+  # and add download URLs. This is fast because:
+  #   - One API call per component (not multiple GitHub searches)
+  #   - Threaded parallel execution (configurable via --threads)
+  #   - No GitHub API rate limits
+  #
+  # After enrichment, maps the SBOM to SW360 by PURL.
   # ────────────────────────────────────────────────────────────────────────────
-  map-sbom:
-    name: "Step 2 · Map SBOM to SW360"
+  enrich-and-map:
+    name: "Step 2 · Enrich URLs + Map to SW360"
     runs-on: self-hosted
     needs: generate-sbom
 
@@ -138,11 +845,46 @@ jobs:
         working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
+      - name: Install requests library
+        run: pip install requests
+        shell: powershell
+
+      # ── Registry-based URL enrichment ──
+      # Queries npm/PyPI/crates.io/RubyGems/NuGet registries in parallel.
+      # No GitHub API calls — avoids rate limits entirely.
+      - name: Enrich SBOM with download URLs from package registries
+        run: |
+          python "${{ env.CAPYCLI_DIR }}/.github/scripts/enrich_sbom_urls.py" `
+            -i sbom.json `
+            -o enriched-sbom.json `
+            --threads 10 `
+            -v
+        shell: powershell
+
+      - name: Verify enriched SBOM
+        run: |
+          if (-not (Test-Path enriched-sbom.json)) {
+            Write-Host "ERROR: enriched-sbom.json not found"
+            exit 1
+          }
+          $sbom = Get-Content enriched-sbom.json | ConvertFrom-Json
+          $total = $sbom.components.Count
+          $withUrls = 0
+          foreach ($comp in $sbom.components) {
+            foreach ($ref in $comp.externalReferences) {
+              if ($ref.comment -eq "source archive (download location)") {
+                $withUrls++
+                break
+              }
+            }
+          }
+          Write-Host "Enriched SBOM: $withUrls / $total components have source URLs"
+        shell: powershell
+
       - name: Map SBOM to SW360
-        timeout-minutes: ${{ fromJSON(env.STEP_TIMEOUT_MINUTES) }}
         run: |
           python -m capycli bom map `
-            -i sbom.json `
+            -i enriched-sbom.json `
             -url ${{ vars.SW360_URL }} `
             -t ${{ secrets.SW360_TOKEN }} `
             -mr mapping-result.json `
@@ -171,11 +913,14 @@ jobs:
 
   # ────────────────────────────────────────────────────────────────────────────
   # JOB 3: Create missing components & releases on SW360
+  #
+  # Creates components/releases that were identified as missing during mapping.
+  # Uses --download flag to download source files from the enriched URLs.
   # ────────────────────────────────────────────────────────────────────────────
   create-components:
     name: "Step 3 · Create components & releases"
     runs-on: self-hosted
-    needs: map-sbom
+    needs: enrich-and-map
 
     steps:
       - name: Checkout project
@@ -208,19 +953,16 @@ jobs:
         shell: powershell
 
       - name: Create missing components
-        timeout-minutes: ${{ fromJSON(env.STEP_TIMEOUT_MINUTES) }}
         run: |
           python -m capycli bom createcomponents `
             -i mapped-sbom.json `
             -o created-sbom.json `
             -url ${{ vars.SW360_URL }} `
             -t ${{ secrets.SW360_TOKEN }} `
-            --download `
             -v
         shell: powershell
 
       - name: Create missing releases
-        timeout-minutes: ${{ fromJSON(env.STEP_TIMEOUT_MINUTES) }}
         run: |
           python -m capycli bom createreleases `
             -i created-sbom.json `
@@ -236,8 +978,7 @@ jobs:
             Write-Host "ERROR: created-sbom.json not found"
             exit 1
           }
-          $size = (Get-Item created-sbom.json).Length
-          Write-Host "created-sbom.json created successfully ($size bytes)"
+          Write-Host "created-sbom.json created successfully ($(Get-Item created-sbom.json).Length bytes)"
         shell: powershell
 
       - name: Upload created SBOM
@@ -284,10 +1025,6 @@ jobs:
           pip install . --force-reinstall --no-cache-dir
         working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
-
-      # ── REMOVED: "Trim SBOM to first 5 packages" test step ──
-      # This was a workaround for container timeouts. Removed because
-      # the pipeline now processes all components correctly.
 
       - name: Create or update SW360 project
         run: |
@@ -404,6 +1141,10 @@ jobs:
 
   # ────────────────────────────────────────────────────────────────────────────
   # JOB 5: Download sources + FOSSology scan
+  #
+  # Downloads dependency sources using URLs enriched in Step 2, then runs
+  # FOSSology scanner on each dependency to generate per-dependency SPDX
+  # license reports.
   # ────────────────────────────────────────────────────────────────────────────
   scan-fossology:
     name: "Step 5 · Download sources & Scan"
@@ -440,11 +1181,10 @@ jobs:
         working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
-      # Download dependency sources from URLs in the SBOM.
-      # cdxgen may include download URLs; if not, downloadsources
-      # will attempt to find them from component metadata.
+      # Download sources using URLs added by enrich_sbom_urls.py.
+      # These URLs come from package registries (npm/PyPI/crates.io etc.)
+      # and are fast to download from.
       - name: Download dependency sources
-        timeout-minutes: ${{ fromJSON(env.STEP_TIMEOUT_MINUTES) }}
         run: |
           if (-not (Test-Path ${{ env.SOURCE_DIR }})) {
             New-Item -ItemType Directory -Path ${{ env.SOURCE_DIR }} | Out-Null
@@ -555,7 +1295,6 @@ jobs:
         shell: powershell
 
       - name: Attach source files to SW360 releases
-        timeout-minutes: ${{ fromJSON(env.STEP_TIMEOUT_MINUTES) }}
         run: |
           python -m capycli bom createreleases `
             -i sourced-sbom.json `
@@ -577,7 +1316,6 @@ jobs:
 
       # Upload per-dependency scan reports to SW360
       - name: Upload per-dependency scan reports to SW360
-        timeout-minutes: ${{ fromJSON(env.STEP_TIMEOUT_MINUTES) }}
         run: |
           $reportFiles = Get-ChildItem -Path ${{ env.REPORT_DIR }} -Filter "*.spdx.json" -Recurse -ErrorAction SilentlyContinue
           $reportCount = $reportFiles.Count
@@ -600,7 +1338,6 @@ jobs:
 
       # Also upload the consolidated report as a fallback
       - name: Upload consolidated scan report to SW360
-        timeout-minutes: ${{ fromJSON(env.STEP_TIMEOUT_MINUTES) }}
         run: |
           if (Test-Path "results/sbom_spdx.json") {
             Write-Host "Uploading consolidated report to all releases..."
