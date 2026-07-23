@@ -632,7 +632,7 @@ jobs:
           path: final-sbom.json
 
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 7: Validate pipeline completeness
+  # JOB 7: Validate pipeline for completeness
   # ────────────────────────────────────────────────────────────────────────────
   validate-pipeline:
     name: "Step 7 · Validate pipeline"
