@@ -1,11 +1,4 @@
-# ──────────────────────────────────────────────────────────────────────────────
-# SCA Full Pipeline — had-radiologyplus
-#
-# Generates a CycloneDX SBOM (cdxgen already adds download URLs from package
-# registries), maps to SW360, creates missing components/releases, runs
-# FOSSology scans (per-dependency), uploads all artifacts to SW360,
-# and validates completeness.
-# ──────────────────────────────────────────────────────────────────────────────
+
 
 name: SCA Full Pipeline — had-radiologyplus
 
