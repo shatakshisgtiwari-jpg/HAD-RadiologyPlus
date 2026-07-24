@@ -5,13 +5,6 @@
 # registries), maps to SW360, creates missing components/releases, runs
 # FOSSology scans (per-dependency), uploads all artifacts to SW360,
 # and validates completeness.
-#
-# Key design principles:
-#   1. Uses cdxgen for SBOM generation — it already includes download URLs
-#      from package registries (npm, PyPI, etc.) in the SBOM output
-#   2. No separate URL enrichment step needed — URLs come from cdxgen
-#   3. No GitHub API calls for source finding — avoids rate limits entirely
-#   4. Generic — works with ANY project, ANY ecosystem
 # ──────────────────────────────────────────────────────────────────────────────
 
 name: SCA Full Pipeline — had-radiologyplus
