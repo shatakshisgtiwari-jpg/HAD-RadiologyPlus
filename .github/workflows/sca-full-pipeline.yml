@@ -40,18 +40,46 @@ jobs:
 
       - name: Install Maven
         run: |
-          if (-not (Get-Command mvn -ErrorAction SilentlyContinue)) {
+          $mavenExtractDir = Join-Path $env:USERPROFILE ".maven"
+          $existingMavenHome = Get-ChildItem "$mavenExtractDir\apache-maven-*" -Directory -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty FullName
+
+          if ($existingMavenHome -and (Test-Path "$existingMavenHome\bin\mvn.cmd")) {
+            Write-Host "Reusing already-installed Maven at $existingMavenHome"
+            [Environment]::SetEnvironmentVariable("MAVEN_HOME", $existingMavenHome, "Process")
+            [Environment]::SetEnvironmentVariable("PATH", "$existingMavenHome\bin;$env:PATH", "Process")
+          } elseif (-not (Get-Command mvn -ErrorAction SilentlyContinue)) {
             Write-Host "Installing Maven..."
-            Invoke-WebRequest -Uri "https://repo1.maven.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip" `
-              -OutFile maven.zip
-            Expand-Archive maven.zip -DestinationPath $env:USERPROFILE\.maven -Force
-            Remove-Item maven.zip
-            $mavenHome = (Get-ChildItem $env:USERPROFILE\.maven\apache-maven* -Directory).FullName
+            $zipPath = Join-Path $env:TEMP "apache-maven-3.9.9-bin.zip"
+            $downloadOk = $false
+            for ($attempt = 1; $attempt -le 3 -and -not $downloadOk; $attempt++) {
+              try {
+                Invoke-WebRequest -Uri "https://repo1.maven.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip" `
+                  -OutFile $zipPath -TimeoutSec 60
+                $downloadOk = $true
+              } catch {
+                Write-Host "Download attempt $attempt failed: $($_.Exception.Message)"
+                Start-Sleep -Seconds 5
+              }
+            }
+            if (-not $downloadOk) {
+              Write-Host "::error::Failed to download Maven after 3 attempts"
+              exit 1
+            }
+            Expand-Archive $zipPath -DestinationPath $mavenExtractDir -Force
+            Remove-Item $zipPath -ErrorAction SilentlyContinue
+            $mavenHome = (Get-ChildItem "$mavenExtractDir\apache-maven-*" -Directory | Select-Object -First 1).FullName
             [Environment]::SetEnvironmentVariable("MAVEN_HOME", $mavenHome, "Process")
             [Environment]::SetEnvironmentVariable("PATH", "$mavenHome\bin;$env:PATH", "Process")
           }
+
           Write-Host "Maven version:"
           mvn -version
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::mvn -version exited with code $LASTEXITCODE"
+            exit 1
+          }
+          exit 0
         shell: powershell
 
       - uses: actions/setup-node@v4
