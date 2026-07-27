@@ -171,10 +171,10 @@ jobs:
       - name: Install CapyCLI (if needed)
         run: |
           $installed = pip list 2>`$null | Select-String -Pattern "^capycli\s"
-          if (-not `$installed) {
+          if (-not $installed) {
               Write-Host "Installing CapyCLI..."
               pip install . --force-reinstall
-              if (`$LASTEXITCODE -ne 0) { exit 1 }
+              if ($LASTEXITCODE -ne 0) { exit 1 }
           } else {
               Write-Host "CapyCLI already installed"
           }
@@ -283,10 +283,10 @@ jobs:
       - name: Install CapyCLI (if needed)
         run: |
           $installed = pip list 2>`$null | Select-String -Pattern "^capycli\s"
-          if (-not `$installed) {
+          if (-not $installed) {
               Write-Host "Installing CapyCLI..."
               pip install . --force-reinstall
-              if (`$LASTEXITCODE -ne 0) { exit 1 }
+              if ($LASTEXITCODE -ne 0) { exit 1 }
           } else {
               Write-Host "CapyCLI already installed"
           }
@@ -440,10 +440,10 @@ jobs:
       - name: Install CapyCLI (if needed)
         run: |
           $installed = pip list 2>`$null | Select-String -Pattern "^capycli\s"
-          if (-not `$installed) {
+          if (-not $installed) {
               Write-Host "Installing CapyCLI..."
               pip install . --force-reinstall
-              if (`$LASTEXITCODE -ne 0) { exit 1 }
+              if ($LASTEXITCODE -ne 0) { exit 1 }
           } else {
               Write-Host "CapyCLI already installed"
           }
@@ -592,10 +592,10 @@ jobs:
       - name: Install CapyCLI (if needed)
         run: |
           $installed = pip list 2>`$null | Select-String -Pattern "^capycli\s"
-          if (-not `$installed) {
+          if (-not $installed) {
               Write-Host "Installing CapyCLI..."
               pip install . --force-reinstall
-              if (`$LASTEXITCODE -ne 0) { exit 1 }
+              if ($LASTEXITCODE -ne 0) { exit 1 }
           } else {
               Write-Host "CapyCLI already installed"
           }
@@ -723,10 +723,10 @@ jobs:
       - name: Install CapyCLI (if needed)
         run: |
           $installed = pip list 2>`$null | Select-String -Pattern "^capycli\s"
-          if (-not `$installed) {
+          if (-not $installed) {
               Write-Host "Installing CapyCLI..."
               pip install . --force-reinstall
-              if (`$LASTEXITCODE -ne 0) { exit 1 }
+              if ($LASTEXITCODE -ne 0) { exit 1 }
           } else {
               Write-Host "CapyCLI already installed"
           }
