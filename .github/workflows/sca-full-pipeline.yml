@@ -3,6 +3,13 @@ name: SCA Full Pipeline — had-radiologyplus
 on:
   push:
     branches: [ main, master, develop ]
+    paths:
+      - 'Backend/**'
+      - 'FrontEnd/package.json'
+      - 'FrontEnd/package-lock.json'
+      - 'pom.xml'
+      - 'allowlist.json'
+      - '.github/workflows/sca-full-pipeline.yml'
   workflow_dispatch:    # manual trigger needed
 
 permissions:
@@ -86,7 +93,15 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Cache cdxgen
+        id: cache-cdxgen
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Roaming/npm/node_modules/@cyclonedx/cdxgen
+          key: cdxgen-${{ runner.os }}
+
       - name: Install cdxgen
+        if: steps.cache-cdxgen.outputs.cache-hit != 'true'
         run: npm install -g @cyclonedx/cdxgen
 
       - name: Generate SBOM
@@ -153,10 +168,14 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install CapyCLI (force reinstall)
+      - name: Install CapyCLI (if needed)
         run: |
-          pip uninstall capycli -y
-          pip install . --force-reinstall --no-cache-dir
+          python -c "import capycli; print(f'CapyCLI v{capycli.__version__} already installed')" 2>`$null
+          if (`$LASTEXITCODE -ne 0) {
+              Write-Host "Installing CapyCLI..."
+              pip install . --force-reinstall
+              if (`$LASTEXITCODE -ne 0) { exit 1 }
+          }
         working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
@@ -181,56 +200,16 @@ jobs:
           Write-Host "mapped-sbom.json created successfully"
         shell: powershell
 
-      - name: Upload mapped SBOM
-        if: always()
+      # Upload mapping results for debugging (not consumed downstream — Step 3 merged here)
+      - name: Upload mapping results (debug)
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: mapped-sbom
-          path: |
-            mapped-sbom.json
-            mapping-result.json
+          name: mapping-result
+          path: mapping-result.json
 
-  # ────────────────────────────────────────────────────────────────────────────
-  # JOB 3: Create missing components & releases on SW360
-  #
-  # Creates components/releases that were identified as missing during mapping.
-  # Uses --download flag to download source files from URLs already in the SBOM
-  # (added by cdxgen from package registries).
-  # ────────────────────────────────────────────────────────────────────────────
-  create-components:
-    name: "Step 3 · Create components & releases"
-    runs-on: self-hosted
-    needs: map-to-sw360
-
-    steps:
-      - name: Checkout project
-        uses: actions/checkout@v4
-        with:
-          clean: true
-
-      - name: Download mapped SBOM
-        uses: actions/download-artifact@v4
-        with:
-          name: mapped-sbom
-
-      - name: Checkout CapyCLI fork
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/capycli
-          ref: feat/sw360/upload_reports
-          path: ${{ env.CAPYCLI_DIR }}
-          clean: true
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install CapyCLI (force reinstall)
-        run: |
-          pip uninstall capycli -y
-          pip install . --force-reinstall --no-cache-dir
-        working-directory: ${{ env.CAPYCLI_DIR }}
-        shell: powershell
+      # ── Inline Step 3: Create missing components & releases ──
+      # (Merged into Step 2 to eliminate redundant CapyCLI setup + artifact handoff)
 
       - name: Create missing components
         run: |
@@ -263,19 +242,18 @@ jobs:
         shell: powershell
 
       - name: Upload created SBOM
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: created-sbom
           path: created-sbom.json
 
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 4: Create/update SW360 project + Capture project ID
+  # JOB 3: Create/update SW360 project + Capture project ID
   # ────────────────────────────────────────────────────────────────────────────
   create-project:
-    name: "Step 4 · Create/update SW360 project"
+    name: "Step 3 · Create/update SW360 project"
     runs-on: self-hosted
-    needs: create-components
+    needs: map-to-sw360
 
     steps:
       - name: Checkout project
@@ -300,10 +278,14 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install CapyCLI (force reinstall)
+      - name: Install CapyCLI (if needed)
         run: |
-          pip uninstall capycli -y
-          pip install . --force-reinstall --no-cache-dir
+          python -c "import capycli; print(f'CapyCLI v{capycli.__version__} already installed')" 2>`$null
+          if (`$LASTEXITCODE -ne 0) {
+              Write-Host "Installing CapyCLI..."
+              pip install . --force-reinstall
+              if (`$LASTEXITCODE -ne 0) { exit 1 }
+          }
         working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
@@ -407,28 +389,24 @@ jobs:
         shell: powershell
 
       - name: Upload project ID
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: project-id
           path: project-id.txt
 
-      - name: Upload created SBOM for downstream jobs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: created-sbom-forward
-          path: created-sbom.json
+      # Note: Step 4 downloads 'created-sbom' directly from Step 2.
+      # This redundant upload is removed — saves ~5s per run.
 
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 5: Download sources + FOSSology scan
+  # JOB 4: Download sources + FOSSology scan
   #
   # Downloads dependency sources using URLs already in the SBOM (added by
   # cdxgen from package registries), then runs FOSSology scanner on each
   # dependency to generate per-dependency SPDX license reports.
   # ────────────────────────────────────────────────────────────────────────────
   scan-fossology:
-    name: "Step 5 · Download sources & Scan"
+    name: "Step 4 · Download sources & Scan"
     runs-on: self-hosted
     needs: create-project
 
@@ -441,7 +419,7 @@ jobs:
       - name: Download created SBOM
         uses: actions/download-artifact@v4
         with:
-          name: created-sbom-forward
+          name: created-sbom
 
       - name: Checkout CapyCLI fork
         uses: actions/checkout@v4
@@ -455,25 +433,76 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install CapyCLI (force reinstall)
+      - name: Install CapyCLI (if needed)
         run: |
-          pip uninstall capycli -y
-          pip install . --force-reinstall --no-cache-dir
+          python -c "import capycli; print(f'CapyCLI v{capycli.__version__} already installed')" 2>`$null
+          if (`$LASTEXITCODE -ne 0) {
+              Write-Host "Installing CapyCLI..."
+              pip install . --force-reinstall
+              if (`$LASTEXITCODE -ne 0) { exit 1 }
+          }
         working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
-      # Download sources using URLs already in the SBOM from cdxgen.
-      # These URLs come from package registries (npm/PyPI/crates.io etc.)
-      # and are fast to download from.
-      - name: Download dependency sources
+      # Download sources in PARALLEL using PowerShell 7 ForEach-Object -Parallel.
+      # Falls back to capycli sequential download if pwsh is unavailable.
+      - name: Download dependency sources (parallel)
         run: |
-          if (-not (Test-Path ${{ env.SOURCE_DIR }})) {
-            New-Item -ItemType Directory -Path ${{ env.SOURCE_DIR }} | Out-Null
+          $sbomPath = "created-sbom.json"
+          $sourceDir = "${{ env.SOURCE_DIR }}"
+          $outSbom = "sourced-sbom.json"
+
+          if (-not (Test-Path $sourceDir)) {
+            New-Item -ItemType Directory -Path $sourceDir | Out-Null
           }
+
+          # Try parallel download with PowerShell 7
+          $pwshAvailable = (Get-Command pwsh -ErrorAction SilentlyContinue) -ne $null
+          if ($pwshAvailable) {
+            Write-Host "=== Parallel download with PowerShell 7 ==="
+            pwsh -NoProfile -Command {
+              param($SbomPath, $SourceDir)
+              $sbom = Get-Content $SbomPath -Raw | ConvertFrom-Json
+              $urls = @()
+              foreach ($comp in $sbom.components) {
+                $url = $null
+                foreach ($ref in $comp.externalReferences) {
+                  if ($ref.url -and ($ref.type -eq "vcs" -or $ref.type -eq "distribution" -or $ref.type -eq "website")) {
+                    $url = $ref.url; break
+                  }
+                }
+                if ($url) {
+                  $safeName = "$($comp.name)-$($comp.version)" -replace '[<>:"/\\|?*]', '_'
+                  $urls += [PSCustomObject]@{ Name = $comp.name; SafeName = $safeName; Url = $url }
+                }
+              }
+              Write-Host "Found $($urls.Count) download URLs"
+              $urls | ForEach-Object -Parallel {
+                $destDir = Join-Path $using:SourceDir $_.SafeName
+                if (-not (Test-Path $destDir)) {
+                  $null = New-Item -ItemType Directory -Path $destDir -Force
+                  try {
+                    Invoke-WebRequest -Uri $_.Url -OutFile (Join-Path $destDir "source.zip") -TimeoutSec 120 -ErrorAction Stop
+                    Write-Host "  [OK] $($_.Name)"
+                  } catch {
+                    Write-Host "  [FAIL] $($_.Name): $($_.Exception.Message)"
+                  }
+                } else {
+                  Write-Host "  [SKIP] $($_.Name) (already exists)"
+                }
+              } -ThrottleLimit 10
+            } -Args $sbomPath, $sourceDir
+          } else {
+            Write-Host "PowerShell 7 not available, falling back to sequential download"
+          }
+
+          # Always run capycli to update SBOM metadata with local file paths.
+          # If parallel download already fetched files, this is near-instant.
+          Write-Host "=== Updating SBOM with local file paths ==="
           python -m capycli bom downloadsources `
-            -i created-sbom.json `
-            -source ${{ env.SOURCE_DIR }} `
-            -o sourced-sbom.json `
+            -i $sbomPath `
+            -source $sourceDir `
+            -o $outSbom `
             -v
         shell: powershell
 
@@ -513,7 +542,7 @@ jobs:
         shell: powershell
 
       - name: Upload scan artifacts
-        if: always()
+        if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
           name: scan-artifacts
@@ -523,10 +552,10 @@ jobs:
             ${{ env.REPORT_DIR }}/
 
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 6: Upload sources & reports to SW360
+  # JOB 5: Upload sources & reports to SW360
   # ────────────────────────────────────────────────────────────────────────────
   upload-to-sw360:
-    name: "Step 6 · Upload to SW360"
+    name: "Step 5 · Upload to SW360"
     runs-on: self-hosted
     needs: scan-fossology
 
@@ -554,10 +583,14 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install CapyCLI (force reinstall)
+      - name: Install CapyCLI (if needed)
         run: |
-          pip uninstall capycli -y
-          pip install . --force-reinstall --no-cache-dir
+          python -c "import capycli; print(f'CapyCLI v{capycli.__version__} already installed')" 2>`$null
+          if (`$LASTEXITCODE -ne 0) {
+              Write-Host "Installing CapyCLI..."
+              pip install . --force-reinstall
+              if (`$LASTEXITCODE -ne 0) { exit 1 }
+          }
         working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
@@ -637,17 +670,17 @@ jobs:
         shell: powershell
 
       - name: Upload final SBOM
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: final-sbom
           path: final-sbom.json
 
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 7: Validate pipeline completeness
+  # JOB 6: Validate pipeline completeness
   # ────────────────────────────────────────────────────────────────────────────
   validate-pipeline:
-    name: "Step 7 · Validate pipeline"
+    name: "Step 6 · Validate pipeline"
     runs-on: self-hosted
     needs: upload-to-sw360
 
@@ -679,10 +712,14 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install CapyCLI (force reinstall)
+      - name: Install CapyCLI (if needed)
         run: |
-          pip uninstall capycli -y
-          pip install . --force-reinstall --no-cache-dir
+          python -c "import capycli; print(f'CapyCLI v{capycli.__version__} already installed')" 2>`$null
+          if (`$LASTEXITCODE -ne 0) {
+              Write-Host "Installing CapyCLI..."
+              pip install . --force-reinstall
+              if (`$LASTEXITCODE -ne 0) { exit 1 }
+          }
         working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
@@ -705,7 +742,7 @@ jobs:
         shell: powershell
 
       - name: Upload all final artifacts
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: all-sbom-artifacts
@@ -713,7 +750,7 @@ jobs:
             final-sbom.json
 
       - name: Upload FOSSology reports
-        if: always()
+        if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
           name: fossology-reports
