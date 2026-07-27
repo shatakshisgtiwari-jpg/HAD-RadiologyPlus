@@ -170,11 +170,13 @@ jobs:
 
       - name: Install CapyCLI (if needed)
         run: |
-          python -c "import capycli; print(f'CapyCLI v{capycli.__version__} already installed')" 2>`$null
-          if (`$LASTEXITCODE -ne 0) {
+          $installed = pip list 2>`$null | Select-String -Pattern "^capycli\s"
+          if (-not `$installed) {
               Write-Host "Installing CapyCLI..."
               pip install . --force-reinstall
               if (`$LASTEXITCODE -ne 0) { exit 1 }
+          } else {
+              Write-Host "CapyCLI already installed"
           }
         working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
@@ -280,11 +282,13 @@ jobs:
 
       - name: Install CapyCLI (if needed)
         run: |
-          python -c "import capycli; print(f'CapyCLI v{capycli.__version__} already installed')" 2>`$null
-          if (`$LASTEXITCODE -ne 0) {
+          $installed = pip list 2>`$null | Select-String -Pattern "^capycli\s"
+          if (-not `$installed) {
               Write-Host "Installing CapyCLI..."
               pip install . --force-reinstall
               if (`$LASTEXITCODE -ne 0) { exit 1 }
+          } else {
+              Write-Host "CapyCLI already installed"
           }
         working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
@@ -435,11 +439,13 @@ jobs:
 
       - name: Install CapyCLI (if needed)
         run: |
-          python -c "import capycli; print(f'CapyCLI v{capycli.__version__} already installed')" 2>`$null
-          if (`$LASTEXITCODE -ne 0) {
+          $installed = pip list 2>`$null | Select-String -Pattern "^capycli\s"
+          if (-not `$installed) {
               Write-Host "Installing CapyCLI..."
               pip install . --force-reinstall
               if (`$LASTEXITCODE -ne 0) { exit 1 }
+          } else {
+              Write-Host "CapyCLI already installed"
           }
         working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
@@ -585,11 +591,13 @@ jobs:
 
       - name: Install CapyCLI (if needed)
         run: |
-          python -c "import capycli; print(f'CapyCLI v{capycli.__version__} already installed')" 2>`$null
-          if (`$LASTEXITCODE -ne 0) {
+          $installed = pip list 2>`$null | Select-String -Pattern "^capycli\s"
+          if (-not `$installed) {
               Write-Host "Installing CapyCLI..."
               pip install . --force-reinstall
               if (`$LASTEXITCODE -ne 0) { exit 1 }
+          } else {
+              Write-Host "CapyCLI already installed"
           }
         working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
@@ -714,11 +722,13 @@ jobs:
 
       - name: Install CapyCLI (if needed)
         run: |
-          python -c "import capycli; print(f'CapyCLI v{capycli.__version__} already installed')" 2>`$null
-          if (`$LASTEXITCODE -ne 0) {
+          $installed = pip list 2>`$null | Select-String -Pattern "^capycli\s"
+          if (-not `$installed) {
               Write-Host "Installing CapyCLI..."
               pip install . --force-reinstall
               if (`$LASTEXITCODE -ne 0) { exit 1 }
+          } else {
+              Write-Host "CapyCLI already installed"
           }
         working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
