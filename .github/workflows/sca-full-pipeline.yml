@@ -144,6 +144,7 @@ jobs:
     name: "Step 2 · Map to SW360"
     runs-on: self-hosted
     needs: generate-sbom
+    timeout-minutes: 60
 
     steps:
       - name: Checkout project
@@ -256,6 +257,7 @@ jobs:
     name: "Step 3 · Create/update SW360 project"
     runs-on: self-hosted
     needs: map-to-sw360
+    timeout-minutes: 30
 
     steps:
       - name: Checkout project
@@ -413,6 +415,7 @@ jobs:
     name: "Step 4 · Download sources & Scan"
     runs-on: self-hosted
     needs: create-project
+    timeout-minutes: 120
 
     steps:
       - name: Checkout project
@@ -564,6 +567,7 @@ jobs:
     name: "Step 5 · Upload to SW360"
     runs-on: self-hosted
     needs: scan-fossology
+    timeout-minutes: 120
 
     steps:
       - name: Checkout project
@@ -637,6 +641,8 @@ jobs:
         shell: powershell
 
       # Upload per-dependency scan reports to SW360
+      # Note: This step makes 3 HTTP calls per dependency (GET attachments, DELETE old, POST new).
+      # With many npm transitive deps, this can take a long time.
       - name: Upload per-dependency scan reports to SW360
         run: |
           $reportFiles = Get-ChildItem -Path ${{ env.REPORT_DIR }} -Filter "*.spdx.json" -Recurse -ErrorAction SilentlyContinue
@@ -644,15 +650,40 @@ jobs:
           Write-Host "Per-dependency reports found: $reportCount"
 
           if ($reportCount -gt 0) {
-            python -m capycli bom uploadreports `
-              -i final-sbom.json `
-              --report-dir ${{ env.REPORT_DIR }} `
-              --filetype COMPONENT_LICENSE_INFO_XML `
-              --comment "Fossology SPDX scan - ${{ env.PROJECT_NAME }} ${{ env.PROJECT_VERSION }}" `
-              -url ${{ vars.SW360_URL }} `
-              -t ${{ secrets.SW360_TOKEN }} `
-              -o final-sbom.json `
-              -v
+            $maxRetries = 3
+            $retryDelay = 30
+            $lastExit = 0
+
+            for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
+              Write-Host "=== Upload attempt $attempt of $maxRetries ==="
+              $proc = Start-Process -FilePath python -ArgumentList @(
+                "-m", "capycli", "bom", "uploadreports",
+                "-i", "final-sbom.json",
+                "--report-dir", "${{ env.REPORT_DIR }}",
+                "--filetype", "COMPONENT_LICENSE_INFO_XML",
+                "--comment", "Fossology SPDX scan - ${{ env.PROJECT_NAME }} ${{ env.PROJECT_VERSION }}",
+                "-url", "${{ vars.SW360_URL }}",
+                "-t", "${{ secrets.SW360_TOKEN }}",
+                "-o", "final-sbom.json",
+                "-v"
+              ) -NoNewWindow -Wait -PassThru
+              $lastExit = $proc.ExitCode
+
+              if ($lastExit -eq 0) {
+                Write-Host "Upload completed successfully on attempt $attempt"
+                break
+              } else {
+                Write-Host "Upload failed (exit code $lastExit) on attempt $attempt"
+                if ($attempt -lt $maxRetries) {
+                  Write-Host "Retrying in $retryDelay seconds..."
+                  Start-Sleep -Seconds $retryDelay
+                }
+              }
+            }
+
+            if ($lastExit -ne 0) {
+              Write-Host "::warning::Per-dependency upload failed after $maxRetries attempts (exit code $lastExit)"
+            }
           } else {
             Write-Host "WARNING: No per-dependency reports found - skipping per-dependency upload"
           }
@@ -663,15 +694,40 @@ jobs:
         run: |
           if (Test-Path "results/sbom_spdx.json") {
             Write-Host "Uploading consolidated report to all releases..."
-            python -m capycli bom uploadreports `
-              -i final-sbom.json `
-              --report-file results/sbom_spdx.json `
-              --filetype COMPONENT_LICENSE_INFO_XML `
-              --comment "Consolidated Fossology SPDX scan - ${{ env.PROJECT_NAME }} ${{ env.PROJECT_VERSION }}" `
-              -url ${{ vars.SW360_URL }} `
-              -t ${{ secrets.SW360_TOKEN }} `
-              -o final-sbom.json `
-              -v
+            $maxRetries = 3
+            $retryDelay = 30
+            $lastExit = 0
+
+            for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
+              Write-Host "=== Consolidated upload attempt $attempt of $maxRetries ==="
+              $proc = Start-Process -FilePath python -ArgumentList @(
+                "-m", "capycli", "bom", "uploadreports",
+                "-i", "final-sbom.json",
+                "--report-file", "results/sbom_spdx.json",
+                "--filetype", "COMPONENT_LICENSE_INFO_XML",
+                "--comment", "Consolidated Fossology SPDX scan - ${{ env.PROJECT_NAME }} ${{ env.PROJECT_VERSION }}",
+                "-url", "${{ vars.SW360_URL }}",
+                "-t", "${{ secrets.SW360_TOKEN }}",
+                "-o", "final-sbom.json",
+                "-v"
+              ) -NoNewWindow -Wait -PassThru
+              $lastExit = $proc.ExitCode
+
+              if ($lastExit -eq 0) {
+                Write-Host "Consolidated upload completed successfully on attempt $attempt"
+                break
+              } else {
+                Write-Host "Consolidated upload failed (exit code $lastExit) on attempt $attempt"
+                if ($attempt -lt $maxRetries) {
+                  Write-Host "Retrying in $retryDelay seconds..."
+                  Start-Sleep -Seconds $retryDelay
+                }
+              }
+            }
+
+            if ($lastExit -ne 0) {
+              Write-Host "::warning::Consolidated report upload failed after $maxRetries attempts (exit code $lastExit)"
+            }
           } else {
             Write-Host "WARNING: Consolidated report not found - skipping"
           }
@@ -691,6 +747,7 @@ jobs:
     name: "Step 6 · Validate pipeline"
     runs-on: self-hosted
     needs: upload-to-sw360
+    timeout-minutes: 30
 
     steps:
       - name: Checkout project
