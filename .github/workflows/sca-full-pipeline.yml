@@ -401,21 +401,27 @@ jobs:
           name: project-id
           path: project-id.txt
 
-      # Note: Step 4 downloads 'created-sbom' directly from Step 2.
-      # This redundant upload is removed — saves ~5s per run.
+      # Note: Step 4 (filter-by-clearing-state) downloads 'created-sbom' from Step 2.
+      # The filtered SBOM is then consumed by Step 5 (scan-fossology).
 
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 4: Download sources + FOSSology scan
+  # JOB 4: Filter SBOM by clearing state
   #
-  # Downloads dependency sources using URLs already in the SBOM (added by
-  # cdxgen from package registries), then runs FOSSology scanner on each
-  # dependency to generate per-dependency SPDX license reports.
+  # Queries SW360 for each release's clearingState and filters the SBOM to
+  # only include releases that still need clearing:
+  #   NEW_CLEARING (0), SENT_TO_CLEARING_TOOL (1), UNDER_CLEARING (2)
+  #
+  # Releases that already have REPORT_AVAILABLE (3) or APPROVED (4) are
+  # skipped — they already have clearing results and don't need re-scanning.
+  #
+  # This avoids redundant downloads, scans, and uploads for already-cleared
+  # dependencies, saving significant pipeline time.
   # ────────────────────────────────────────────────────────────────────────────
-  scan-fossology:
-    name: "Step 4 · Download sources & Scan"
+  filter-by-clearing-state:
+    name: "Step 4 · Filter by clearing state"
     runs-on: self-hosted
-    needs: create-project
-    timeout-minutes: 120
+    needs: map-to-sw360
+    timeout-minutes: 30
 
     steps:
       - name: Checkout project
@@ -427,6 +433,123 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: created-sbom
+
+      - name: Filter SBOM by clearing state
+        run: |
+          $sw360Url = "${{ vars.SW360_URL }}"
+          $token = "${{ secrets.SW360_TOKEN }}"
+          $sbomPath = "created-sbom.json"
+          $outPath = "filtered-sbom.json"
+
+          $sbom = Get-Content $sbomPath -Raw | ConvertFrom-Json
+          $total = $sbom.components.Count
+          Write-Host "=== Filtering $total components by clearing state ==="
+
+          $included = @()
+          $skipped = @()
+          $errors = @()
+
+          foreach ($comp in $sbom.components) {
+            $sw360Id = $null
+            foreach ($prop in $comp.properties) {
+              if ($prop.name -eq "siemens:sw360Id") {
+                $sw360Id = $prop.value
+                break
+              }
+            }
+
+            if (-not $sw360Id) {
+              # No SW360 ID — new/unmapped component, include it
+              $included += $comp
+              Write-Host "  [INCLUDE] $($comp.name)@$($comp.version) (no SW360 ID)"
+              continue
+            }
+
+            try {
+              $releaseUrl = "$sw360Url/resource/api/releases/$sw360Id"
+              $response = Invoke-RestMethod -Uri $releaseUrl -Headers @{
+                "Authorization" = "Token $token"
+              } -ErrorAction Stop
+
+              $clearingState = $response.clearingState
+
+              if (-not $clearingState) {
+                # No clearing state set — needs clearing
+                $included += $comp
+                Write-Host "  [INCLUDE] $($comp.name)@$($comp.version) (no clearing state)"
+              } elseif ($clearingState -in @("REPORT_AVAILABLE", "APPROVED")) {
+                $skipped += $comp
+                Write-Host "  [SKIP]    $($comp.name)@$($comp.version) - clearingState=$clearingState"
+              } else {
+                # NEW_CLEARING, SENT_TO_CLEARING_TOOL, UNDER_CLEARING — needs clearing
+                $included += $comp
+                Write-Host "  [INCLUDE] $($comp.name)@$($comp.version) - clearingState=$clearingState"
+              }
+            } catch {
+              # Query failed — include to be safe
+              $included += $comp
+              $errors += $comp
+              Write-Host "  [INCLUDE] $($comp.name)@$($comp.version) - query error: $($_.Exception.Message)"
+            }
+          }
+
+          # Build filtered SBOM
+          $filteredSbom = $sbom | Select-Object -Property *
+          $filteredSbom.components = $included
+
+          $filteredSbom | ConvertTo-Json -Depth 10 | Out-File -FilePath $outPath -Encoding UTF8
+
+          Write-Host ""
+          Write-Host "=== Filtering Summary ==="
+          Write-Host "Total components:     $total"
+          Write-Host "Included (need scan): $($included.Count)"
+          Write-Host "Skipped (already cleared): $($skipped.Count)"
+          Write-Host "Query errors:         $($errors.Count)"
+          Write-Host "Filtered SBOM saved to: $outPath ($(Get-Item $outPath).Length bytes)"
+        shell: powershell
+
+      - name: Verify filtered SBOM
+        run: |
+          if (-not (Test-Path filtered-sbom.json)) {
+            Write-Host "ERROR: filtered-sbom.json not found"
+            exit 1
+          }
+          $sbom = Get-Content filtered-sbom.json -Raw | ConvertFrom-Json
+          Write-Host "filtered-sbom.json created - $($sbom.components.Count) components remaining"
+        shell: powershell
+
+      - name: Upload filtered SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: filtered-sbom
+          path: filtered-sbom.json
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # JOB 5: Download sources + FOSSology scan
+  #
+  # Downloads dependency sources using URLs already in the SBOM (added by
+  # cdxgen from package registries), then runs FOSSology scanner on each
+  # dependency to generate per-dependency SPDX license reports.
+  #
+  # Uses the filtered SBOM from Step 4 — only processes releases that still
+  # need clearing (NEW_CLEARING, SENT_TO_CLEARING_TOOL, UNDER_CLEARING).
+  # ────────────────────────────────────────────────────────────────────────────
+  scan-fossology:
+    name: "Step 5 · Download sources & Scan"
+    runs-on: self-hosted
+    needs: filter-by-clearing-state
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+        with:
+          clean: true
+
+      - name: Download filtered SBOM
+        uses: actions/download-artifact@v4
+        with:
+          name: filtered-sbom
 
       - name: Checkout CapyCLI fork
         uses: actions/checkout@v4
@@ -457,7 +580,7 @@ jobs:
       # Falls back to capycli sequential download if pwsh is unavailable.
       - name: Download dependency sources (parallel)
         run: |
-          $sbomPath = "created-sbom.json"
+          $sbomPath = "filtered-sbom.json"
           $sourceDir = "${{ env.SOURCE_DIR }}"
           $outSbom = "sourced-sbom.json"
 
@@ -531,7 +654,7 @@ jobs:
           scan_mode: "scan-only-deps"
           scanners: "ojo copyright"
           report_format: "SPDX_JSON"
-          sbom_path: "created-sbom.json"
+          sbom_path: "filtered-sbom.json"
           per_dependency_report: "true"
           report_dir: ${{ env.REPORT_DIR }}
 
@@ -561,10 +684,13 @@ jobs:
             ${{ env.REPORT_DIR }}/
 
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 5: Upload sources & reports to SW360
+  # JOB 6: Upload sources & reports to SW360
+  #
+  # Uploads scan results only for releases that were scanned (those filtered
+  # by clearing state in Step 4). Already-cleared releases are untouched.
   # ────────────────────────────────────────────────────────────────────────────
   upload-to-sw360:
-    name: "Step 5 · Upload to SW360"
+    name: "Step 6 · Upload to SW360"
     runs-on: self-hosted
     needs: scan-fossology
     timeout-minutes: 120
@@ -741,10 +867,10 @@ jobs:
           path: final-sbom.json
 
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 6: Validate pipeline completeness
+  # JOB 7: Validate pipeline completeness
   # ────────────────────────────────────────────────────────────────────────────
   validate-pipeline:
-    name: "Step 6 · Validate pipeline"
+    name: "Step 7 · Validate pipeline"
     runs-on: self-hosted
     needs: upload-to-sw360
     timeout-minutes: 30
