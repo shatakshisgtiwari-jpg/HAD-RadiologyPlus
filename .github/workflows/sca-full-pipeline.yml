@@ -497,6 +497,35 @@ jobs:
           $filteredSbom = $sbom | Select-Object -Property *
           $filteredSbom.components = $included
 
+          # Build set of included bom-refs for dependency filtering
+          $includedRefs = @{}
+          foreach ($comp in $included) {
+            $includedRefs[$comp."bom-ref"] = $true
+          }
+
+          # Filter dependencies: only keep entries where the ref AND all dependsOn
+          # entries reference components that are still in the filtered SBOM
+          if ($filteredSbom.dependencies) {
+            $filteredDeps = @()
+            foreach ($dep in $filteredSbom.dependencies) {
+              if (-not $includedRefs.ContainsKey($dep.ref)) {
+                continue
+              }
+              $allResolved = $true
+              foreach ($child in $dep.dependsOn) {
+                if (-not $includedRefs.ContainsKey($child)) {
+                  $allResolved = $false
+                  break
+                }
+              }
+              if ($allResolved) {
+                $filteredDeps += $dep
+              }
+            }
+            $filteredSbom.dependencies = $filteredDeps
+            Write-Host "Filtered dependencies: $($sbom.dependencies.Count) -> $($filteredDeps.Count)"
+          }
+
           # Use WriteAllText to avoid UTF-8 BOM that Out-File adds in PowerShell 5.1
           $json = $filteredSbom | ConvertTo-Json -Depth 10
           [System.IO.File]::WriteAllText($outPath, $json)
