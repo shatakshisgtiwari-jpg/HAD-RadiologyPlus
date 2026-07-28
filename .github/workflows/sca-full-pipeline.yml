@@ -497,7 +497,9 @@ jobs:
           $filteredSbom = $sbom | Select-Object -Property *
           $filteredSbom.components = $included
 
-          $filteredSbom | ConvertTo-Json -Depth 10 | Out-File -FilePath $outPath -Encoding UTF8
+          # Use WriteAllText to avoid UTF-8 BOM that Out-File adds in PowerShell 5.1
+          $json = $filteredSbom | ConvertTo-Json -Depth 10
+          [System.IO.File]::WriteAllText($outPath, $json)
 
           Write-Host ""
           Write-Host "=== Filtering Summary ==="
