@@ -503,22 +503,30 @@ jobs:
             $includedRefs[$comp."bom-ref"] = $true
           }
 
-          # Filter dependencies: only keep entries where the ref AND all dependsOn
-          # entries reference components that are still in the filtered SBOM
+          # Filter dependencies: keep entries whose ref is in the filtered SBOM,
+          # and prune orphaned dependsOn children (those referencing removed components).
+          # Note: dependsOn may be null (CycloneDX allows ref-only dependency entries).
           if ($filteredSbom.dependencies) {
             $filteredDeps = @()
             foreach ($dep in $filteredSbom.dependencies) {
               if (-not $includedRefs.ContainsKey($dep.ref)) {
                 continue
               }
-              $allResolved = $true
+              # If dependsOn is null or empty, keep the entry as-is
+              if (-not $dep.dependsOn -or $dep.dependsOn.Count -eq 0) {
+                $filteredDeps += $dep
+                continue
+              }
+              # Prune orphaned children instead of dropping the whole entry
+              $validChildren = @()
               foreach ($child in $dep.dependsOn) {
-                if (-not $includedRefs.ContainsKey($child)) {
-                  $allResolved = $false
-                  break
+                if ($includedRefs.ContainsKey($child)) {
+                  $validChildren += $child
                 }
               }
-              if ($allResolved) {
+              # Only keep the entry if it still has at least one valid child
+              if ($validChildren.Count -gt 0) {
+                $dep.dependsOn = $validChildren
                 $filteredDeps += $dep
               }
             }
@@ -813,18 +821,16 @@ jobs:
 
             for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
               Write-Host "=== Upload attempt $attempt of $maxRetries ==="
-              $proc = Start-Process -FilePath python -ArgumentList @(
-                "-m", "capycli", "bom", "uploadreports",
-                "-i", "final-sbom.json",
-                "--report-dir", "${{ env.REPORT_DIR }}",
-                "--filetype", "COMPONENT_LICENSE_INFO_XML",
-                "--comment", "Fossology SPDX scan - ${{ env.PROJECT_NAME }} ${{ env.PROJECT_VERSION }}",
-                "-url", "${{ vars.SW360_URL }}",
-                "-t", "${{ secrets.SW360_TOKEN }}",
-                "-o", "final-sbom.json",
-                "-v"
-              ) -NoNewWindow -Wait -PassThru
-              $lastExit = $proc.ExitCode
+              python -m capycli bom uploadreports `
+                -i final-sbom.json `
+                --report-dir ${{ env.REPORT_DIR }} `
+                --filetype COMPONENT_LICENSE_INFO_XML `
+                --comment "Fossology SPDX scan - ${{ env.PROJECT_NAME }} ${{ env.PROJECT_VERSION }}" `
+                -url ${{ vars.SW360_URL }} `
+                -t ${{ secrets.SW360_TOKEN }} `
+                -o final-sbom.json `
+                -v
+              $lastExit = $LASTEXITCODE
 
               if ($lastExit -eq 0) {
                 Write-Host "Upload completed successfully on attempt $attempt"
@@ -857,18 +863,16 @@ jobs:
 
             for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
               Write-Host "=== Consolidated upload attempt $attempt of $maxRetries ==="
-              $proc = Start-Process -FilePath python -ArgumentList @(
-                "-m", "capycli", "bom", "uploadreports",
-                "-i", "final-sbom.json",
-                "--report-file", "results/sbom_spdx.json",
-                "--filetype", "COMPONENT_LICENSE_INFO_XML",
-                "--comment", "Consolidated Fossology SPDX scan - ${{ env.PROJECT_NAME }} ${{ env.PROJECT_VERSION }}",
-                "-url", "${{ vars.SW360_URL }}",
-                "-t", "${{ secrets.SW360_TOKEN }}",
-                "-o", "final-sbom.json",
-                "-v"
-              ) -NoNewWindow -Wait -PassThru
-              $lastExit = $proc.ExitCode
+              python -m capycli bom uploadreports `
+                -i final-sbom.json `
+                --report-file results/sbom_spdx.json `
+                --filetype COMPONENT_LICENSE_INFO_XML `
+                --comment "Consolidated Fossology SPDX scan - ${{ env.PROJECT_NAME }} ${{ env.PROJECT_VERSION }}" `
+                -url ${{ vars.SW360_URL }} `
+                -t ${{ secrets.SW360_TOKEN }} `
+                -o final-sbom.json `
+                -v
+              $lastExit = $LASTEXITCODE
 
               if ($lastExit -eq 0) {
                 Write-Host "Consolidated upload completed successfully on attempt $attempt"
