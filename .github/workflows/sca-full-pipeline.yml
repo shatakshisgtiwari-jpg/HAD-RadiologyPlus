@@ -9,7 +9,7 @@ on:
       - 'FrontEnd/package-lock.json'
       - 'pom.xml'
       - 'allowlist.json'
-      - '.github/workflows/sca-full-pipeline-linux.yml'
+      - '.github/workflows/sca-full-pipeline.yml'
   workflow_dispatch:    # manual trigger needed
 
 permissions:
