@@ -73,12 +73,16 @@ jobs:
           fi
           before=$(jq '.components | length' sbom.json)
 
-          # Remove GitHub Actions components (pkg:githubactions/...)
-          # These are CI pipeline tools, not project dependencies.
+          # Remove GitHub Actions components.
+          # cdxgen includes actions/checkout, actions/setup-java, etc. as SBOM
+          # components. These are CI pipeline tools, not project dependencies.
+          # They have no downloadable source archives, which breaks --download.
+          # Filter by group="actions" or name matching "actions/*" pattern.
           jq '
             . as $root |
             (.components | map(select(
-              (.purl // "") | test("^pkg:githubactions/") | not
+              (.group // "") != "actions" and
+              ((.name // "") | test("^actions/") | not)
             ))) as $filtered |
             ($filtered | map(."bom-ref")) as $keep_refs |
             .components = $filtered |
@@ -153,14 +157,13 @@ jobs:
             --matchmode full-search,all-versions \
             -v
 
-      - name: Create missing components (with source download)
+      - name: Create missing components
         run: |
           python -m capycli bom createcomponents \
             -i mapped-sbom.json \
             -o created-sbom.json \
             -url ${{ vars.SW360_URL }} \
             -t ${{ secrets.SW360_TOKEN }} \
-            --download \
             -v
 
       - name: Create missing releases
