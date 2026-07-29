@@ -1,4 +1,4 @@
-name: SCA Full Pipeline — had-radiologyplus
+name: SCA Full Pipeline — had-radiologyplus (Linux)
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
       - 'FrontEnd/package-lock.json'
       - 'pom.xml'
       - 'allowlist.json'
-      - '.github/workflows/sca-full-pipeline.yml'
+      - '.github/workflows/sca-full-pipeline-linux.yml'
   workflow_dispatch:    # manual trigger needed
 
 permissions:
@@ -26,14 +26,10 @@ env:
 jobs:
   # ────────────────────────────────────────────────────────────────────────────
   # JOB 1: Generate SBOM with cdxgen
-  #
-  # cdxgen automatically includes download URLs (resolved tarball URLs from
-  # package-lock.json, PyPI, etc.) as externalReferences in the SBOM.
-  # No separate URL enrichment is needed.
   # ────────────────────────────────────────────────────────────────────────────
   generate-sbom:
     name: "Step 1 · Generate CycloneDX SBOM"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout project
@@ -45,50 +41,6 @@ jobs:
           java-version: "21"
           cache: maven
 
-      - name: Install Maven
-        run: |
-          $mavenExtractDir = Join-Path $env:USERPROFILE ".maven"
-          $existingMavenHome = Get-ChildItem "$mavenExtractDir\apache-maven-*" -Directory -ErrorAction SilentlyContinue |
-            Select-Object -First 1 -ExpandProperty FullName
-
-          if ($existingMavenHome -and (Test-Path "$existingMavenHome\bin\mvn.cmd")) {
-            Write-Host "Reusing already-installed Maven at $existingMavenHome"
-            [Environment]::SetEnvironmentVariable("MAVEN_HOME", $existingMavenHome, "Process")
-            [Environment]::SetEnvironmentVariable("PATH", "$existingMavenHome\bin;$env:PATH", "Process")
-          } elseif (-not (Get-Command mvn -ErrorAction SilentlyContinue)) {
-            Write-Host "Installing Maven..."
-            $zipPath = Join-Path $env:TEMP "apache-maven-3.9.9-bin.zip"
-            $downloadOk = $false
-            for ($attempt = 1; $attempt -le 3 -and -not $downloadOk; $attempt++) {
-              try {
-                Invoke-WebRequest -Uri "https://repo1.maven.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip" `
-                  -OutFile $zipPath -TimeoutSec 60
-                $downloadOk = $true
-              } catch {
-                Write-Host "Download attempt $attempt failed: $($_.Exception.Message)"
-                Start-Sleep -Seconds 5
-              }
-            }
-            if (-not $downloadOk) {
-              Write-Host "::error::Failed to download Maven after 3 attempts"
-              exit 1
-            }
-            Expand-Archive $zipPath -DestinationPath $mavenExtractDir -Force
-            Remove-Item $zipPath -ErrorAction SilentlyContinue
-            $mavenHome = (Get-ChildItem "$mavenExtractDir\apache-maven-*" -Directory | Select-Object -First 1).FullName
-            [Environment]::SetEnvironmentVariable("MAVEN_HOME", $mavenHome, "Process")
-            [Environment]::SetEnvironmentVariable("PATH", "$mavenHome\bin;$env:PATH", "Process")
-          }
-
-          Write-Host "Maven version:"
-          mvn -version
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "::error::mvn -version exited with code $LASTEXITCODE"
-            exit 1
-          }
-          exit 0
-        shell: powershell
-
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -97,7 +49,7 @@ jobs:
         id: cache-cdxgen
         uses: actions/cache@v4
         with:
-          path: ~/AppData/Roaming/npm/node_modules/@cyclonedx/cdxgen
+          path: ~/.npm-global/lib/node_modules/@cyclonedx/cdxgen
           key: cdxgen-${{ runner.os }}
 
       - name: Install cdxgen
@@ -109,24 +61,13 @@ jobs:
 
       - name: Verify SBOM was created
         run: |
-          if (-not (Test-Path sbom.json)) {
-            Write-Error "sbom.json not found!"
+          if [ ! -f sbom.json ]; then
+            echo "::error::sbom.json not found!"
             exit 1
-          }
-          $sbom = Get-Content sbom.json | ConvertFrom-Json
-          $compCount = $sbom.components.Count
-          $withUrls = 0
-          foreach ($comp in $sbom.components) {
-            foreach ($ref in $comp.externalReferences) {
-              if ($ref.comment -eq "source archive (download location)" -or
-                  $ref.comment -eq "binary (download location)") {
-                $withUrls++
-                break
-              }
-            }
-          }
-          Write-Host "sbom.json created successfully - $compCount components, $withUrls with download URLs"
-        shell: powershell
+          fi
+          comp_count=$(jq '.components | length' sbom.json)
+          with_urls=$(jq '[.components[] | select(.externalReferences[]?.comment == "source archive (download location)" or .externalReferences[]?.comment == "binary (download location)")] | length' sbom.json)
+          echo "sbom.json created successfully - $comp_count components, $with_urls with download URLs"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -136,13 +77,10 @@ jobs:
 
   # ────────────────────────────────────────────────────────────────────────────
   # JOB 2: Map SBOM to SW360
-  #
-  # Maps the SBOM to SW360 by PURL. No URL enrichment needed — cdxgen already
-  # included download URLs from package registries in the SBOM.
   # ────────────────────────────────────────────────────────────────────────────
   map-to-sw360:
     name: "Step 2 · Map to SW360"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     needs: generate-sbom
     timeout-minutes: 60
 
@@ -171,39 +109,35 @@ jobs:
 
       - name: Install CapyCLI (if needed)
         run: |
-          $installed = pip list 2>`$null | Select-String -Pattern "^capycli\s"
-          if (-not $installed) {
-              Write-Host "Installing CapyCLI..."
-              pip install . --force-reinstall
-              if ($LASTEXITCODE -ne 0) { exit 1 }
-          } else {
-              Write-Host "CapyCLI already installed"
-          }
+          if ! pip list 2>/dev/null | grep -q "^capycli "; then
+            echo "Installing CapyCLI..."
+            pip install . --force-reinstall
+            if [ $? -ne 0 ]; then exit 1; fi
+          else
+            echo "CapyCLI already installed"
+          fi
         working-directory: ${{ env.CAPYCLI_DIR }}
-        shell: powershell
 
       - name: Map SBOM to SW360
         run: |
-          python -m capycli bom map `
-            -i sbom.json `
-            -url ${{ vars.SW360_URL }} `
-            -t ${{ secrets.SW360_TOKEN }} `
-            -mr mapping-result.json `
-            -o mapped-sbom.json `
-            --matchmode full-search,all-versions `
+          python -m capycli bom map \
+            -i sbom.json \
+            -url ${{ vars.SW360_URL }} \
+            -t ${{ secrets.SW360_TOKEN }} \
+            -mr mapping-result.json \
+            -o mapped-sbom.json \
+            --matchmode full-search,all-versions \
             -v
-        shell: powershell
 
       - name: Verify mapped SBOM
         run: |
-          if (-not (Test-Path mapped-sbom.json)) {
-            Write-Host "ERROR: mapped-sbom.json not found"
+          if [ ! -f mapped-sbom.json ]; then
+            echo "ERROR: mapped-sbom.json not found"
             exit 1
-          }
-          Write-Host "mapped-sbom.json created successfully"
-        shell: powershell
+          fi
+          echo "mapped-sbom.json created successfully"
 
-      # Upload mapping results for debugging (not consumed downstream — Step 3 merged here)
+      # Upload mapping results for debugging
       - name: Upload mapping results (debug)
         if: failure()
         uses: actions/upload-artifact@v4
@@ -212,37 +146,34 @@ jobs:
           path: mapping-result.json
 
       # ── Inline Step 3: Create missing components & releases ──
-      # (Merged into Step 2 to eliminate redundant CapyCLI setup + artifact handoff)
 
       - name: Create missing components
         run: |
-          python -m capycli bom createcomponents `
-            -i mapped-sbom.json `
-            -o created-sbom.json `
-            -url ${{ vars.SW360_URL }} `
-            -t ${{ secrets.SW360_TOKEN }} `
-            --download `
+          python -m capycli bom createcomponents \
+            -i mapped-sbom.json \
+            -o created-sbom.json \
+            -url ${{ vars.SW360_URL }} \
+            -t ${{ secrets.SW360_TOKEN }} \
+            --download \
             -v
-        shell: powershell
 
       - name: Create missing releases
         run: |
-          python -m capycli bom createreleases `
-            -i created-sbom.json `
-            -o created-sbom.json `
-            -url ${{ vars.SW360_URL }} `
-            -t ${{ secrets.SW360_TOKEN }} `
+          python -m capycli bom createreleases \
+            -i created-sbom.json \
+            -o created-sbom.json \
+            -url ${{ vars.SW360_URL }} \
+            -t ${{ secrets.SW360_TOKEN }} \
             -v
-        shell: powershell
 
       - name: Verify created SBOM
         run: |
-          if (-not (Test-Path created-sbom.json)) {
-            Write-Host "ERROR: created-sbom.json not found"
+          if [ ! -f created-sbom.json ]; then
+            echo "ERROR: created-sbom.json not found"
             exit 1
-          }
-          Write-Host "created-sbom.json created successfully ($(Get-Item created-sbom.json).Length bytes)"
-        shell: powershell
+          fi
+          size=$(stat -c%s created-sbom.json)
+          echo "created-sbom.json created successfully ($size bytes)"
 
       - name: Upload created SBOM
         uses: actions/upload-artifact@v4
@@ -255,7 +186,7 @@ jobs:
   # ────────────────────────────────────────────────────────────────────────────
   create-project:
     name: "Step 3 · Create/update SW360 project"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     needs: map-to-sw360
     timeout-minutes: 30
 
@@ -284,115 +215,87 @@ jobs:
 
       - name: Install CapyCLI (if needed)
         run: |
-          $installed = pip list 2>`$null | Select-String -Pattern "^capycli\s"
-          if (-not $installed) {
-              Write-Host "Installing CapyCLI..."
-              pip install . --force-reinstall
-              if ($LASTEXITCODE -ne 0) { exit 1 }
-          } else {
-              Write-Host "CapyCLI already installed"
-          }
+          if ! pip list 2>/dev/null | grep -q "^capycli "; then
+            echo "Installing CapyCLI..."
+            pip install . --force-reinstall
+            if [ $? -ne 0 ]; then exit 1; fi
+          else
+            echo "CapyCLI already installed"
+          fi
         working-directory: ${{ env.CAPYCLI_DIR }}
-        shell: powershell
 
       - name: Create or update SW360 project
         run: |
-          python -m capycli project create `
-            -i created-sbom.json `
-            -url ${{ vars.SW360_URL }} `
-            -t ${{ secrets.SW360_TOKEN }} `
-            -name "${{ env.PROJECT_NAME }}" `
-            -version "${{ env.PROJECT_VERSION }}" `
-            -source had-radiologyplus-project-info.json `
+          python -m capycli project create \
+            -i created-sbom.json \
+            -url ${{ vars.SW360_URL }} \
+            -t ${{ secrets.SW360_TOKEN }} \
+            -name "${{ env.PROJECT_NAME }}" \
+            -version "${{ env.PROJECT_VERSION }}" \
+            -source had-radiologyplus-project-info.json \
             -v
-        shell: powershell
 
       - name: Capture SW360 project ID
         id: get-project-id
         run: |
-          Write-Host "=== Capturing SW360 project ID ==="
-          $projectId = $null
+          echo "=== Capturing SW360 project ID ==="
+          project_id=""
 
           # Method 1: Try capycli project find (search by name)
-          Write-Host "Method 1: Searching via capycli project find..."
-          $output = python -m capycli project find `
-            -name "${{ env.PROJECT_NAME }}" `
-            -url ${{ vars.SW360_URL }} `
-            -t ${{ secrets.SW360_TOKEN }} 2>&1
-          $null = $LASTEXITCODE
-          $match = ($output | Select-String -Pattern '([a-f0-9]{32})' -AllMatches)
-          if ($match -and $match.Matches.Count -gt 0) {
-            $projectId = $match.Matches.Groups[1].Value
-            Write-Host "Found project ID via search: $projectId"
-          }
+          echo "Method 1: Searching via capycli project find..."
+          output=$(python -m capycli project find \
+            -name "${{ env.PROJECT_NAME }}" \
+            -url ${{ vars.SW360_URL }} \
+            -t ${{ secrets.SW360_TOKEN }} 2>&1)
+          match=$(echo "$output" | grep -oP '[a-f0-9]{32}' | head -1)
+          if [ -n "$match" ]; then
+            project_id="$match"
+            echo "Found project ID via search: $project_id"
+          fi
 
           # Method 2: Query SW360 API directly
-          if (-not $projectId) {
-            Write-Host "Method 2: Querying SW360 API directly..."
-            try {
-              $token = "${{ secrets.SW360_TOKEN }}"
-              $url = "${{ vars.SW360_URL }}"
-              $searchUrl = "$url/resource/api/search?type=project&searchText=${{ env.PROJECT_NAME }}&pagination=0&elements=10"
-              $response = Invoke-RestMethod -Uri $searchUrl -Headers @{
-                "X-CSRF-Token" = "$token"
-                "Authorization" = "Token $token"
-              } -ErrorAction Stop
-              if ($response._embedded -and $response._embedded."sw360:projects") {
-                foreach ($proj in $response._embedded."sw360:projects") {
-                  if ($proj.name -eq "${{ env.PROJECT_NAME }}" -and $proj.version -eq "${{ env.PROJECT_VERSION }}") {
-                    $href = $proj._links.self.href
-                    $projectId = $href.Split('/')[-1]
-                    Write-Host "Found project ID via API: $projectId"
-                    break
-                  }
-                }
-              }
-            } catch {
-              Write-Host "API query failed: $($_.Exception.Message)"
-            }
-          }
+          if [ -z "$project_id" ]; then
+            echo "Method 2: Querying SW360 API directly..."
+            token="${{ secrets.SW360_TOKEN }}"
+            url="${{ vars.SW360_URL }}"
+            search_url="$url/resource/api/search?type=project&searchText=${{ env.PROJECT_NAME }}&pagination=0&elements=10"
+            response=$(curl -s -f -H "X-CSRF-Token: $token" -H "Authorization: Token $token" "$search_url" 2>/dev/null) || true
+            if [ -n "$response" ]; then
+              project_id=$(echo "$response" | jq -r --arg name "${{ env.PROJECT_NAME }}" --arg ver "${{ env.PROJECT_VERSION }}" '
+                ._embedded["sw360:projects"][] | select(.name == $name and .version == $ver) | ._links.self.href | split("/")[-1]' 2>/dev/null)
+              if [ -n "$project_id" ]; then
+                echo "Found project ID via API: $project_id"
+              fi
+            fi
+          fi
 
           # Method 3: List all projects
-          if (-not $projectId) {
-            Write-Host "Method 3: Listing all projects..."
-            try {
-              $token = "${{ secrets.SW360_TOKEN }}"
-              $url = "${{ vars.SW360_URL }}"
-              $listUrl = "$url/resource/api/projects?pagination=0&elements=50"
-              $response = Invoke-RestMethod -Uri $listUrl -Headers @{
-                "X-CSRF-Token" = "$token"
-                "Authorization" = "Token $token"
-              } -ErrorAction Stop
-              if ($response._embedded -and $response._embedded."sw360:projects") {
-                foreach ($proj in $response._embedded."sw360:projects") {
-                  if ($proj.name -eq "${{ env.PROJECT_NAME }}" -and $proj.version -eq "${{ env.PROJECT_VERSION }}") {
-                    $href = $proj._links.self.href
-                    $projectId = $href.Split('/')[-1]
-                    Write-Host "Found project ID via listing: $projectId"
-                    break
-                  }
-                }
-              }
-            } catch {
-              Write-Host "Project listing failed: $($_.Exception.Message)"
-            }
-          }
+          if [ -z "$project_id" ]; then
+            echo "Method 3: Listing all projects..."
+            token="${{ secrets.SW360_TOKEN }}"
+            url="${{ vars.SW360_URL }}"
+            list_url="$url/resource/api/projects?pagination=0&elements=50"
+            response=$(curl -s -f -H "X-CSRF-Token: $token" -H "Authorization: Token $token" "$list_url" 2>/dev/null) || true
+            if [ -n "$response" ]; then
+              project_id=$(echo "$response" | jq -r --arg name "${{ env.PROJECT_NAME }}" --arg ver "${{ env.PROJECT_VERSION }}" '
+                ._embedded["sw360:projects"][] | select(.name == $name and .version == $ver) | ._links.self.href | split("/")[-1]' 2>/dev/null)
+              if [ -n "$project_id" ]; then
+                echo "Found project ID via listing: $project_id"
+              fi
+            fi
+          fi
 
-          if ($projectId) {
-            Write-Host "SUCCESS: Project ID = $projectId"
-            Add-Content -Path $env:GITHUB_OUTPUT -Value "project_id=$projectId"
-          } else {
-            Write-Host "ERROR: Could not find project ID"
+          if [ -n "$project_id" ]; then
+            echo "SUCCESS: Project ID = $project_id"
+            echo "project_id=$project_id" >> "$GITHUB_OUTPUT"
+          else
+            echo "ERROR: Could not find project ID"
             exit 1
-          }
-          exit 0
-        shell: powershell
+          fi
 
       - name: Save project ID to file
         run: |
-          $projectId = "${{ steps.get-project-id.outputs.project_id }}"
-          $projectId | Out-File -FilePath project-id.txt -Encoding UTF8
-        shell: powershell
+          echo "${{ steps.get-project-id.outputs.project_id }}" > project-id.txt
 
       - name: Upload project ID
         if: success()
@@ -401,25 +304,12 @@ jobs:
           name: project-id
           path: project-id.txt
 
-      # Note: Step 4 (filter-by-clearing-state) downloads 'created-sbom' from Step 2.
-      # The filtered SBOM is then consumed by Step 5 (scan-fossology).
-
   # ────────────────────────────────────────────────────────────────────────────
   # JOB 4: Filter SBOM by clearing state
-  #
-  # Queries SW360 for each release's clearingState and filters the SBOM to
-  # only include releases that still need clearing:
-  #   NEW_CLEARING (0), SENT_TO_CLEARING_TOOL (1), UNDER_CLEARING (2)
-  #
-  # Releases that already have REPORT_AVAILABLE (3) or APPROVED (4) are
-  # skipped — they already have clearing results and don't need re-scanning.
-  #
-  # This avoids redundant downloads, scans, and uploads for already-cleared
-  # dependencies, saving significant pipeline time.
   # ────────────────────────────────────────────────────────────────────────────
   filter-by-clearing-state:
     name: "Step 4 · Filter by clearing state"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     needs: map-to-sw360
     timeout-minutes: 30
 
@@ -436,126 +326,104 @@ jobs:
 
       - name: Filter SBOM by clearing state
         run: |
-          $sw360Url = "${{ vars.SW360_URL }}"
-          $token = "${{ secrets.SW360_TOKEN }}"
-          $sbomPath = "created-sbom.json"
-          $outPath = "filtered-sbom.json"
+          sw360_url="${{ vars.SW360_URL }}"
+          token="${{ secrets.SW360_TOKEN }}"
+          sbom_path="created-sbom.json"
+          out_path="filtered-sbom.json"
 
-          $sbom = Get-Content $sbomPath -Raw | ConvertFrom-Json
-          $total = $sbom.components.Count
-          Write-Host "=== Filtering $total components by clearing state ==="
+          total=$(jq '.components | length' "$sbom_path")
+          echo "=== Filtering $total components by clearing state ==="
 
-          $included = @()
-          $skipped = @()
-          $errors = @()
+          # Build a jq filter script that checks clearing state for each component
+          # We'll process components one by one using curl + jq
+          included="[]"
+          skipped="[]"
+          errors="[]"
 
-          foreach ($comp in $sbom.components) {
-            $sw360Id = $null
-            foreach ($prop in $comp.properties) {
-              if ($prop.name -eq "siemens:sw360Id") {
-                $sw360Id = $prop.value
-                break
-              }
-            }
+          # Read component list into a variable for iteration
+          comp_count=$(jq '.components | length' "$sbom_path")
 
-            if (-not $sw360Id) {
+          for i in $(seq 0 $((comp_count - 1))); do
+            comp=$(jq ".components[$i]" "$sbom_path")
+            name=$(echo "$comp" | jq -r '.name')
+            version=$(echo "$comp" | jq -r '.version // "unknown"')
+            sw360_id=$(echo "$comp" | jq -r '.properties[]? | select(.name == "siemens:sw360Id") | .value' 2>/dev/null)
+
+            if [ -z "$sw360_id" ] || [ "$sw360_id" = "null" ]; then
               # No SW360 ID — new/unmapped component, include it
-              $included += $comp
-              Write-Host "  [INCLUDE] $($comp.name)@$($comp.version) (no SW360 ID)"
+              included=$(echo "$included" | jq ". + [$comp]")
+              echo "  [INCLUDE] $name@$version (no SW360 ID)"
               continue
-            }
+            fi
 
-            try {
-              $releaseUrl = "$sw360Url/resource/api/releases/$sw360Id"
-              $response = Invoke-RestMethod -Uri $releaseUrl -Headers @{
-                "Authorization" = "Token $token"
-              } -ErrorAction Stop
+            # Query SW360 for clearing state
+            release_url="$sw360_url/resource/api/releases/$sw360_id"
+            response=$(curl -s -H "Authorization: Token $token" "$release_url" 2>/dev/null) || true
 
-              $clearingState = $response.clearingState
-
-              if (-not $clearingState) {
-                # No clearing state set — needs clearing
-                $included += $comp
-                Write-Host "  [INCLUDE] $($comp.name)@$($comp.version) (no clearing state)"
-              } elseif ($clearingState -in @("REPORT_AVAILABLE", "APPROVED")) {
-                $skipped += $comp
-                Write-Host "  [SKIP]    $($comp.name)@$($comp.version) - clearingState=$clearingState"
-              } else {
-                # NEW_CLEARING, SENT_TO_CLEARING_TOOL, UNDER_CLEARING — needs clearing
-                $included += $comp
-                Write-Host "  [INCLUDE] $($comp.name)@$($comp.version) - clearingState=$clearingState"
-              }
-            } catch {
+            if [ -z "$response" ]; then
               # Query failed — include to be safe
-              $included += $comp
-              $errors += $comp
-              Write-Host "  [INCLUDE] $($comp.name)@$($comp.version) - query error: $($_.Exception.Message)"
-            }
-          }
+              included=$(echo "$included" | jq ". + [$comp]")
+              errors=$(echo "$errors" | jq ". + [$comp]")
+              echo "  [INCLUDE] $name@$version - query error"
+              continue
+            fi
 
-          # Build filtered SBOM
-          $filteredSbom = $sbom | Select-Object -Property *
-          $filteredSbom.components = $included
+            clearing_state=$(echo "$response" | jq -r '.clearingState // empty')
+
+            if [ -z "$clearing_state" ]; then
+              # No clearing state set — needs clearing
+              included=$(echo "$included" | jq ". + [$comp]")
+              echo "  [INCLUDE] $name@$version (no clearing state)"
+            elif [ "$clearing_state" = "REPORT_AVAILABLE" ] || [ "$clearing_state" = "APPROVED" ]; then
+              skipped=$(echo "$skipped" | jq ". + [$comp]")
+              echo "  [SKIP]    $name@$version - clearingState=$clearing_state"
+            else
+              # NEW_CLEARING, SENT_TO_CLEARING_TOOL, UNDER_CLEARING — needs clearing
+              included=$(echo "$included" | jq ". + [$comp]")
+              echo "  [INCLUDE] $name@$version - clearingState=$clearing_state"
+            fi
+          done
+
+          # Build filtered SBOM with included components
+          jq --argjson included "$included" '.components = $included' "$sbom_path" > "$out_path.tmp"
 
           # Build set of included bom-refs for dependency filtering
-          $includedRefs = @{}
-          foreach ($comp in $included) {
-            $includedRefs[$comp."bom-ref"] = $true
-          }
+          included_refs=$(echo "$included" | jq '[.[]."bom-ref"]')
 
-          # Filter dependencies: keep entries whose ref is in the filtered SBOM,
-          # and prune orphaned dependsOn children (those referencing removed components).
-          # Note: dependsOn may be null (CycloneDX allows ref-only dependency entries).
-          if ($filteredSbom.dependencies) {
-            $filteredDeps = @()
-            foreach ($dep in $filteredSbom.dependencies) {
-              if (-not $includedRefs.ContainsKey($dep.ref)) {
-                continue
-              }
-              # If dependsOn is null or empty, keep the entry as-is
-              if (-not $dep.dependsOn -or $dep.dependsOn.Count -eq 0) {
-                $filteredDeps += $dep
-                continue
-              }
-              # Prune orphaned children instead of dropping the whole entry
-              $validChildren = @()
-              foreach ($child in $dep.dependsOn) {
-                if ($includedRefs.ContainsKey($child)) {
-                  $validChildren += $child
-                }
-              }
-              # Only keep the entry if it still has at least one valid child
-              if ($validChildren.Count -gt 0) {
-                $dep.dependsOn = $validChildren
-                $filteredDeps += $dep
-              }
-            }
-            $filteredSbom.dependencies = $filteredDeps
-            Write-Host "Filtered dependencies: $($sbom.dependencies.Count) -> $($filteredDeps.Count)"
-          }
+          # Filter dependencies
+          jq --argjson included_refs "$included_refs" '
+            if .dependencies then
+              .dependencies = [
+                .dependencies[] | select(.ref as $r | $included_refs | index($r) != null) |
+                if .dependsOn then
+                  .dependsOn = [.dependsOn[] | select(. as $c | $included_refs | index($c) != null)]
+                else . end |
+                select((.dependsOn | length) > 0 or (.dependsOn == null))
+              ]
+            else . end
+          ' "$out_path.tmp" > "$out_path"
+          rm -f "$out_path.tmp"
 
-          # Use WriteAllText to avoid UTF-8 BOM that Out-File adds in PowerShell 5.1
-          $json = $filteredSbom | ConvertTo-Json -Depth 10
-          [System.IO.File]::WriteAllText($outPath, $json)
+          included_count=$(echo "$included" | jq 'length')
+          skipped_count=$(echo "$skipped" | jq 'length')
+          errors_count=$(echo "$errors" | jq 'length')
 
-          Write-Host ""
-          Write-Host "=== Filtering Summary ==="
-          Write-Host "Total components:     $total"
-          Write-Host "Included (need scan): $($included.Count)"
-          Write-Host "Skipped (already cleared): $($skipped.Count)"
-          Write-Host "Query errors:         $($errors.Count)"
-          Write-Host "Filtered SBOM saved to: $outPath ($(Get-Item $outPath).Length bytes)"
-        shell: powershell
+          echo ""
+          echo "=== Filtering Summary ==="
+          echo "Total components:     $total"
+          echo "Included (need scan): $included_count"
+          echo "Skipped (already cleared): $skipped_count"
+          echo "Query errors:         $errors_count"
+          echo "Filtered SBOM saved to: $out_path ($(stat -c%s "$out_path") bytes)"
 
       - name: Verify filtered SBOM
         run: |
-          if (-not (Test-Path filtered-sbom.json)) {
-            Write-Host "ERROR: filtered-sbom.json not found"
+          if [ ! -f filtered-sbom.json ]; then
+            echo "ERROR: filtered-sbom.json not found"
             exit 1
-          }
-          $sbom = Get-Content filtered-sbom.json -Raw | ConvertFrom-Json
-          Write-Host "filtered-sbom.json created - $($sbom.components.Count) components remaining"
-        shell: powershell
+          fi
+          comp_count=$(jq '.components | length' filtered-sbom.json)
+          echo "filtered-sbom.json created - $comp_count components remaining"
 
       - name: Upload filtered SBOM
         uses: actions/upload-artifact@v4
@@ -565,17 +433,10 @@ jobs:
 
   # ────────────────────────────────────────────────────────────────────────────
   # JOB 5: Download sources + FOSSology scan
-  #
-  # Downloads dependency sources using URLs already in the SBOM (added by
-  # cdxgen from package registries), then runs FOSSology scanner on each
-  # dependency to generate per-dependency SPDX license reports.
-  #
-  # Uses the filtered SBOM from Step 4 — only processes releases that still
-  # need clearing (NEW_CLEARING, SENT_TO_CLEARING_TOOL, UNDER_CLEARING).
   # ────────────────────────────────────────────────────────────────────────────
   scan-fossology:
     name: "Step 5 · Download sources & Scan"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     needs: filter-by-clearing-state
     timeout-minutes: 120
 
@@ -604,94 +465,63 @@ jobs:
 
       - name: Install CapyCLI (if needed)
         run: |
-          $installed = pip list 2>`$null | Select-String -Pattern "^capycli\s"
-          if (-not $installed) {
-              Write-Host "Installing CapyCLI..."
-              pip install . --force-reinstall
-              if ($LASTEXITCODE -ne 0) { exit 1 }
-          } else {
-              Write-Host "CapyCLI already installed"
-          }
+          if ! pip list 2>/dev/null | grep -q "^capycli "; then
+            echo "Installing CapyCLI..."
+            pip install . --force-reinstall
+            if [ $? -ne 0 ]; then exit 1; fi
+          else
+            echo "CapyCLI already installed"
+          fi
         working-directory: ${{ env.CAPYCLI_DIR }}
-        shell: powershell
 
-      # Download sources using capycli (sequential, handles all URL formats).
-      # After download, merge sw360Ids back because capycli bom downloadsources
-      # does not preserve custom properties (siemens:sw360Id) in the output SBOM.
+      # Download sources using capycli, then merge sw360Ids back
       - name: Download dependency sources
         run: |
-          $sbomPath = "filtered-sbom.json"
-          $sourceDir = "${{ env.SOURCE_DIR }}"
-          $outSbom = "sourced-sbom.json"
+          sbom_path="filtered-sbom.json"
+          source_dir="${{ env.SOURCE_DIR }}"
+          out_sbom="sourced-sbom.json"
 
-          if (-not (Test-Path $sourceDir)) {
-            New-Item -ItemType Directory -Path $sourceDir | Out-Null
-          }
+          mkdir -p "$source_dir"
 
-          Write-Host "=== Updating SBOM with local file paths ==="
-          python -m capycli bom downloadsources `
-            -i $sbomPath `
-            -source $sourceDir `
-            -o $outSbom `
+          echo "=== Updating SBOM with local file paths ==="
+          python -m capycli bom downloadsources \
+            -i "$sbom_path" \
+            -source "$source_dir" \
+            -o "$out_sbom" \
             -v
 
           # capycli bom downloadsources does NOT preserve custom properties
           # like siemens:sw360Id. Merge them back from the input SBOM.
-          Write-Host "=== Restoring sw360Ids from input SBOM ==="
-          $inputSbom = Get-Content $sbomPath -Raw | ConvertFrom-Json
-          $outputSbom = Get-Content $outSbom -Raw | ConvertFrom-Json
+          echo "=== Restoring sw360Ids from input SBOM ==="
 
           # Build lookup: name@version → sw360Id from input
-          $idMap = @{}
-          foreach ($comp in $inputSbom.components) {
-            $key = "$($comp.name)@$($comp.version)"
-            foreach ($prop in $comp.properties) {
-              if ($prop.name -eq "siemens:sw360Id") {
-                $idMap[$key] = $prop.value
-                break
-              }
-            }
-          }
-          Write-Host "Found $($idMap.Count) sw360Ids in input SBOM"
+          id_map=$(jq '[.components[] | {key: "\(.name)@\(.version)", id: (.properties[]? | select(.name == "siemens:sw360Id") | .value)}] | from_entries' "$sbom_path")
+          id_count=$(echo "$id_map" | jq 'length')
+          echo "Found $id_count sw360Ids in input SBOM"
 
           # Apply sw360Ids to output SBOM components
-          $restored = 0
-          foreach ($comp in $outputSbom.components) {
-            $key = "$($comp.name)@$($comp.version)"
-            if ($idMap.ContainsKey($key)) {
-              # Check if sw360Id already exists in output
-              $hasId = $false
-              foreach ($prop in $comp.properties) {
-                if ($prop.name -eq "siemens:sw360Id") {
-                  $hasId = $true
-                  break
-                }
-              }
-              if (-not $hasId) {
-                $comp.properties += [PSCustomObject]@{
-                  name = "siemens:sw360Id"
-                  value = $idMap[$key]
-                }
-                $restored++
-              }
-            }
-          }
-          Write-Host "Restored $restored sw360Ids to output SBOM"
+          jq --argjson id_map "$id_map" '
+            .components |= map(
+              .key = "\(.name)@\(.version)" |
+              if $id_map[.key] and (.properties | any(.name == "siemens:sw360Id") | not) then
+                .properties += [{"name": "siemens:sw360Id", "value": $id_map[.key]}]
+              else . end |
+              del(.key)
+            )
+          ' "$out_sbom" > "${out_sbom}.tmp" && mv "${out_sbom}.tmp" "$out_sbom"
 
-          # Write back without BOM
-          $json = $outputSbom | ConvertTo-Json -Depth 10
-          [System.IO.File]::WriteAllText($outSbom, $json)
-          Write-Host "Updated $outSbom with sw360Ids preserved"
-        shell: powershell
+          restored=$(jq '[.components[] | .properties[]? | select(.name == "siemens:sw360Id")] | length' "$out_sbom")
+          echo "Restored sw360Ids to output SBOM (total components with sw360Id: $restored)"
+          echo "Updated $out_sbom with sw360Ids preserved"
 
       - name: Verify sourced SBOM
         run: |
-          if (-not (Test-Path sourced-sbom.json)) {
-            Write-Host "ERROR: sourced-sbom.json not found"
+          if [ ! -f sourced-sbom.json ]; then
+            echo "ERROR: sourced-sbom.json not found"
             exit 1
-          }
-          Write-Host "sourced-sbom.json created successfully ($(Get-Item sourced-sbom.json).Length bytes)"
-        shell: powershell
+          fi
+          size=$(stat -c%s sourced-sbom.json)
+          echo "sourced-sbom.json created successfully ($size bytes)"
 
       - name: Run FOSSology analysis
         id: fossology
@@ -706,18 +536,17 @@ jobs:
 
       - name: Verify FOSSology output
         run: |
-          if (-not (Test-Path "results/sbom_spdx.json")) {
-            Write-Host "ERROR: results/sbom_spdx.json not found"
+          if [ ! -f "results/sbom_spdx.json" ]; then
+            echo "ERROR: results/sbom_spdx.json not found"
             exit 1
-          }
-          $size = (Get-Item "results/sbom_spdx.json").Length
-          Write-Host "OK: results/sbom_spdx.json exists ($size bytes)"
-          $reportFiles = Get-ChildItem -Path ${{ env.REPORT_DIR }} -Filter "*.spdx.json" -Recurse -ErrorAction SilentlyContinue
-          Write-Host "Per-dependency reports: $($reportFiles.Count)"
-          if ($reportFiles.Count -eq 0) {
-            Write-Host "WARNING: No per-dependency reports generated - will use consolidated report only"
-          }
-        shell: powershell
+          fi
+          size=$(stat -c%s "results/sbom_spdx.json")
+          echo "OK: results/sbom_spdx.json exists ($size bytes)"
+          report_files=$(find ${{ env.REPORT_DIR }} -name "*.spdx.json" -type f 2>/dev/null | wc -l)
+          echo "Per-dependency reports: $report_files"
+          if [ "$report_files" -eq 0 ]; then
+            echo "WARNING: No per-dependency reports generated - will use consolidated report only"
+          fi
 
       - name: Upload scan artifacts
         if: success() || failure()
@@ -731,13 +560,10 @@ jobs:
 
   # ────────────────────────────────────────────────────────────────────────────
   # JOB 6: Upload sources & reports to SW360
-  #
-  # Uploads scan results only for releases that were scanned (those filtered
-  # by clearing state in Step 4). Already-cleared releases are untouched.
   # ────────────────────────────────────────────────────────────────────────────
   upload-to-sw360:
     name: "Step 6 · Upload to SW360"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     needs: scan-fossology
     timeout-minutes: 120
 
@@ -767,193 +593,149 @@ jobs:
 
       - name: Install CapyCLI (if needed)
         run: |
-          $installed = pip list 2>`$null | Select-String -Pattern "^capycli\s"
-          if (-not $installed) {
-              Write-Host "Installing CapyCLI..."
-              pip install . --force-reinstall
-              if ($LASTEXITCODE -ne 0) { exit 1 }
-          } else {
-              Write-Host "CapyCLI already installed"
-          }
+          if ! pip list 2>/dev/null | grep -q "^capycli "; then
+            echo "Installing CapyCLI..."
+            pip install . --force-reinstall
+            if [ $? -ne 0 ]; then exit 1; fi
+          else
+            echo "CapyCLI already installed"
+          fi
         working-directory: ${{ env.CAPYCLI_DIR }}
-        shell: powershell
 
       - name: Restore files to working directory
         run: |
-          Copy-Item "scan-output/sourced-sbom.json" -Destination "sourced-sbom.json" -Force
-          if (Test-Path "scan-output/results") {
-            Copy-Item "scan-output/results" -Destination "results" -Recurse -Force
-          }
-          if (Test-Path "scan-output/${{ env.REPORT_DIR }}") {
-            Copy-Item "scan-output/${{ env.REPORT_DIR }}" -Destination "${{ env.REPORT_DIR }}" -Recurse -Force
-          }
-          if (Test-Path "scan-output/sources") {
-            Copy-Item "scan-output/sources" -Destination "sources" -Recurse -Force
-          }
-        shell: powershell
+          cp "scan-output/sourced-sbom.json" "sourced-sbom.json"
+          [ -d "scan-output/results" ] && cp -r "scan-output/results" .
+          [ -d "scan-output/${{ env.REPORT_DIR }}" ] && cp -r "scan-output/${{ env.REPORT_DIR }}" .
+          [ -d "scan-output/sources" ] && cp -r "scan-output/sources" .
 
       - name: Attach source files to SW360 releases
         run: |
-          python -m capycli bom createreleases `
-            -i sourced-sbom.json `
-            -o final-sbom.json `
-            -url ${{ vars.SW360_URL }} `
-            -t ${{ secrets.SW360_TOKEN }} `
-            -source ${{ env.SOURCE_DIR }} `
+          python -m capycli bom createreleases \
+            -i sourced-sbom.json \
+            -o final-sbom.json \
+            -url ${{ vars.SW360_URL }} \
+            -t ${{ secrets.SW360_TOKEN }} \
+            -source ${{ env.SOURCE_DIR }} \
             -v
-        shell: powershell
 
       - name: Restore sw360Ids in final SBOM
         run: |
           # capycli bom createreleases may drop custom properties like
           # siemens:sw360Id. Merge them back from sourced-sbom.json.
-          Write-Host "=== Restoring sw360Ids in final-sbom.json ==="
-          $srcSbom = Get-Content "sourced-sbom.json" -Raw | ConvertFrom-Json
-          $finalSbom = Get-Content "final-sbom.json" -Raw | ConvertFrom-Json
+          echo "=== Restoring sw360Ids in final-sbom.json ==="
 
-          $idMap = @{}
-          foreach ($comp in $srcSbom.components) {
-            $key = "$($comp.name)@$($comp.version)"
-            foreach ($prop in $comp.properties) {
-              if ($prop.name -eq "siemens:sw360Id") {
-                $idMap[$key] = $prop.value
-                break
-              }
-            }
-          }
-          Write-Host "Found $($idMap.Count) sw360Ids in sourced-sbom.json"
+          id_map=$(jq '[.components[] | {key: "\(.name)@\(.version)", id: (.properties[]? | select(.name == "siemens:sw360Id") | .value)}] | from_entries' "sourced-sbom.json")
+          id_count=$(echo "$id_map" | jq 'length')
+          echo "Found $id_count sw360Ids in sourced-sbom.json"
 
-          $restored = 0
-          foreach ($comp in $finalSbom.components) {
-            $key = "$($comp.name)@$($comp.version)"
-            if ($idMap.ContainsKey($key)) {
-              $hasId = $false
-              foreach ($prop in $comp.properties) {
-                if ($prop.name -eq "siemens:sw360Id") {
-                  $hasId = $true
-                  break
-                }
-              }
-              if (-not $hasId) {
-                $comp.properties += [PSCustomObject]@{
-                  name = "siemens:sw360Id"
-                  value = $idMap[$key]
-                }
-                $restored++
-              }
-            }
-          }
-          Write-Host "Restored $restored sw360Ids to final-sbom.json"
+          jq --argjson id_map "$id_map" '
+            .components |= map(
+              .key = "\(.name)@\(.version)" |
+              if $id_map[.key] and (.properties | any(.name == "siemens:sw360Id") | not) then
+                .properties += [{"name": "siemens:sw360Id", "value": $id_map[.key]}]
+              else . end |
+              del(.key)
+            )
+          ' "final-sbom.json" > "final-sbom.json.tmp" && mv "final-sbom.json.tmp" "final-sbom.json"
 
-          $json = $finalSbom | ConvertTo-Json -Depth 10
-          [System.IO.File]::WriteAllText("final-sbom.json", $json)
-          Write-Host "final-sbom.json updated with sw360Ids preserved"
-        shell: powershell
+          with_ids=$(jq '[.components[] | select(.properties[]?.name == "siemens:sw360Id")] | length' "final-sbom.json")
+          echo "final-sbom.json updated with sw360Ids preserved ($with_ids components with sw360Id)"
 
       - name: Verify final SBOM
         run: |
-          if (-not (Test-Path final-sbom.json)) {
-            Write-Host "ERROR: final-sbom.json not found"
+          if [ ! -f final-sbom.json ]; then
+            echo "ERROR: final-sbom.json not found"
             exit 1
-          }
-          $final = Get-Content final-sbom.json -Raw | ConvertFrom-Json
-          $withIds = 0
-          foreach ($comp in $final.components) {
-            foreach ($prop in $comp.properties) {
-              if ($prop.name -eq "siemens:sw360Id") { $withIds++; break }
-            }
-          }
-          Write-Host "final-sbom.json created successfully ($(Get-Item final-sbom.json).Length bytes, $withIds components with sw360Id)"
-        shell: powershell
+          fi
+          size=$(stat -c%s final-sbom.json)
+          with_ids=$(jq '[.components[] | select(.properties[]?.name == "siemens:sw360Id")] | length' final-sbom.json)
+          echo "final-sbom.json created successfully ($size bytes, $with_ids components with sw360Id)"
 
       # Upload per-dependency scan reports to SW360
-      # Note: This step makes 3 HTTP calls per dependency (GET attachments, DELETE old, POST new).
-      # With many npm transitive deps, this can take a long time.
       - name: Upload per-dependency scan reports to SW360
         run: |
-          $reportFiles = Get-ChildItem -Path ${{ env.REPORT_DIR }} -Filter "*.spdx.json" -Recurse -ErrorAction SilentlyContinue
-          $reportCount = $reportFiles.Count
-          Write-Host "Per-dependency reports found: $reportCount"
+          report_files=$(find ${{ env.REPORT_DIR }} -name "*.spdx.json" -type f 2>/dev/null)
+          report_count=$(echo "$report_files" | wc -l)
+          echo "Per-dependency reports found: $report_count"
 
-          if ($reportCount -gt 0) {
-            $maxRetries = 3
-            $retryDelay = 30
-            $lastExit = 0
+          if [ "$report_count" -gt 0 ]; then
+            max_retries=3
+            retry_delay=30
+            last_exit=0
 
-            for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-              Write-Host "=== Upload attempt $attempt of $maxRetries ==="
-              python -m capycli bom uploadreports `
-                -i final-sbom.json `
-                --report-dir ${{ env.REPORT_DIR }} `
-                --filetype COMPONENT_LICENSE_INFO_XML `
-                --comment "Fossology SPDX scan - ${{ env.PROJECT_NAME }} ${{ env.PROJECT_VERSION }}" `
-                -url ${{ vars.SW360_URL }} `
-                -t ${{ secrets.SW360_TOKEN }} `
-                -o final-sbom.json `
+            for attempt in $(seq 1 $max_retries); do
+              echo "=== Upload attempt $attempt of $max_retries ==="
+              python -m capycli bom uploadreports \
+                -i final-sbom.json \
+                --report-dir ${{ env.REPORT_DIR }} \
+                --filetype COMPONENT_LICENSE_INFO_XML \
+                --comment "Fossology SPDX scan - ${{ env.PROJECT_NAME }} ${{ env.PROJECT_VERSION }}" \
+                -url ${{ vars.SW360_URL }} \
+                -t ${{ secrets.SW360_TOKEN }} \
+                -o final-sbom.json \
                 -v
-              $lastExit = $LASTEXITCODE
+              last_exit=$?
 
-              if ($lastExit -eq 0) {
-                Write-Host "Upload completed successfully on attempt $attempt"
+              if [ "$last_exit" -eq 0 ]; then
+                echo "Upload completed successfully on attempt $attempt"
                 break
-              } else {
-                Write-Host "Upload failed (exit code $lastExit) on attempt $attempt"
-                if ($attempt -lt $maxRetries) {
-                  Write-Host "Retrying in $retryDelay seconds..."
-                  Start-Sleep -Seconds $retryDelay
-                }
-              }
-            }
+              else
+                echo "Upload failed (exit code $last_exit) on attempt $attempt"
+                if [ "$attempt" -lt "$max_retries" ]; then
+                  echo "Retrying in $retry_delay seconds..."
+                  sleep "$retry_delay"
+                fi
+              fi
+            done
 
-            if ($lastExit -ne 0) {
-              Write-Host "::warning::Per-dependency upload failed after $maxRetries attempts (exit code $lastExit)"
-            }
-          } else {
-            Write-Host "WARNING: No per-dependency reports found - skipping per-dependency upload"
-          }
-        shell: powershell
+            if [ "$last_exit" -ne 0 ]; then
+              echo "::warning::Per-dependency upload failed after $max_retries attempts (exit code $last_exit)"
+            fi
+          else
+            echo "WARNING: No per-dependency reports found - skipping per-dependency upload"
+          fi
 
       # Also upload the consolidated report as a fallback
       - name: Upload consolidated scan report to SW360
         run: |
-          if (Test-Path "results/sbom_spdx.json") {
-            Write-Host "Uploading consolidated report to all releases..."
-            $maxRetries = 3
-            $retryDelay = 30
-            $lastExit = 0
+          if [ -f "results/sbom_spdx.json" ]; then
+            echo "Uploading consolidated report to all releases..."
+            max_retries=3
+            retry_delay=30
+            last_exit=0
 
-            for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-              Write-Host "=== Consolidated upload attempt $attempt of $maxRetries ==="
-              python -m capycli bom uploadreports `
-                -i final-sbom.json `
-                --report-file results/sbom_spdx.json `
-                --filetype COMPONENT_LICENSE_INFO_XML `
-                --comment "Consolidated Fossology SPDX scan - ${{ env.PROJECT_NAME }} ${{ env.PROJECT_VERSION }}" `
-                -url ${{ vars.SW360_URL }} `
-                -t ${{ secrets.SW360_TOKEN }} `
-                -o final-sbom.json `
+            for attempt in $(seq 1 $max_retries); do
+              echo "=== Consolidated upload attempt $attempt of $max_retries ==="
+              python -m capycli bom uploadreports \
+                -i final-sbom.json \
+                --report-file results/sbom_spdx.json \
+                --filetype COMPONENT_LICENSE_INFO_XML \
+                --comment "Consolidated Fossology SPDX scan - ${{ env.PROJECT_NAME }} ${{ env.PROJECT_VERSION }}" \
+                -url ${{ vars.SW360_URL }} \
+                -t ${{ secrets.SW360_TOKEN }} \
+                -o final-sbom.json \
                 -v
-              $lastExit = $LASTEXITCODE
+              last_exit=$?
 
-              if ($lastExit -eq 0) {
-                Write-Host "Consolidated upload completed successfully on attempt $attempt"
+              if [ "$last_exit" -eq 0 ]; then
+                echo "Consolidated upload completed successfully on attempt $attempt"
                 break
-              } else {
-                Write-Host "Consolidated upload failed (exit code $lastExit) on attempt $attempt"
-                if ($attempt -lt $maxRetries) {
-                  Write-Host "Retrying in $retryDelay seconds..."
-                  Start-Sleep -Seconds $retryDelay
-                }
-              }
-            }
+              else
+                echo "Consolidated upload failed (exit code $last_exit) on attempt $attempt"
+                if [ "$attempt" -lt "$max_retries" ]; then
+                  echo "Retrying in $retry_delay seconds..."
+                  sleep "$retry_delay"
+                fi
+              fi
+            done
 
-            if ($lastExit -ne 0) {
-              Write-Host "::warning::Consolidated report upload failed after $maxRetries attempts (exit code $lastExit)"
-            }
-          } else {
-            Write-Host "WARNING: Consolidated report not found - skipping"
-          }
-        shell: powershell
+            if [ "$last_exit" -ne 0 ]; then
+              echo "::warning::Consolidated report upload failed after $max_retries attempts (exit code $last_exit)"
+            fi
+          else
+            echo "WARNING: Consolidated report not found - skipping"
+          fi
 
       - name: Upload final SBOM
         if: success()
@@ -967,7 +749,7 @@ jobs:
   # ────────────────────────────────────────────────────────────────────────────
   validate-pipeline:
     name: "Step 7 · Validate pipeline"
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     needs: upload-to-sw360
     timeout-minutes: 30
 
@@ -1001,34 +783,31 @@ jobs:
 
       - name: Install CapyCLI (if needed)
         run: |
-          $installed = pip list 2>`$null | Select-String -Pattern "^capycli\s"
-          if (-not $installed) {
-              Write-Host "Installing CapyCLI..."
-              pip install . --force-reinstall
-              if ($LASTEXITCODE -ne 0) { exit 1 }
-          } else {
-              Write-Host "CapyCLI already installed"
-          }
+          if ! pip list 2>/dev/null | grep -q "^capycli "; then
+            echo "Installing CapyCLI..."
+            pip install . --force-reinstall
+            if [ $? -ne 0 ]; then exit 1; fi
+          else
+            echo "CapyCLI already installed"
+          fi
         working-directory: ${{ env.CAPYCLI_DIR }}
-        shell: powershell
 
       - name: Validate pipeline completeness
         run: |
-          $projectId = (Get-Content -Path project-id.txt -Raw).Trim()
-          if (-not $projectId) {
-            Write-Host "ERROR: Project ID not available"
+          project_id=$(cat project-id.txt | tr -d '[:space:]')
+          if [ -z "$project_id" ]; then
+            echo "ERROR: Project ID not available"
             exit 1
-          }
+          fi
 
-          python -m capycli project prerequisites `
-            -i final-sbom.json `
-            -id $projectId `
-            -url ${{ vars.SW360_URL }} `
-            -t ${{ secrets.SW360_TOKEN }} `
-            --check-reports `
-            --forceerror `
+          python -m capycli project prerequisites \
+            -i final-sbom.json \
+            -id "$project_id" \
+            -url ${{ vars.SW360_URL }} \
+            -t ${{ secrets.SW360_TOKEN }} \
+            --check-reports \
+            --forceerror \
             -v
-        shell: powershell
 
       - name: Upload all final artifacts
         if: success()
