@@ -615,9 +615,10 @@ jobs:
         working-directory: ${{ env.CAPYCLI_DIR }}
         shell: powershell
 
-      # Download sources in PARALLEL using PowerShell 7 ForEach-Object -Parallel.
-      # Falls back to capycli sequential download if pwsh is unavailable.
-      - name: Download dependency sources (parallel)
+      # Download sources using capycli (sequential, handles all URL formats).
+      # After download, merge sw360Ids back because capycli bom downloadsources
+      # does not preserve custom properties (siemens:sw360Id) in the output SBOM.
+      - name: Download dependency sources
         run: |
           $sbomPath = "filtered-sbom.json"
           $sourceDir = "${{ env.SOURCE_DIR }}"
@@ -627,54 +628,60 @@ jobs:
             New-Item -ItemType Directory -Path $sourceDir | Out-Null
           }
 
-          # Try parallel download with PowerShell 7
-          $pwshAvailable = (Get-Command pwsh -ErrorAction SilentlyContinue) -ne $null
-          if ($pwshAvailable) {
-            Write-Host "=== Parallel download with PowerShell 7 ==="
-            pwsh -NoProfile -Command {
-              param($SbomPath, $SourceDir)
-              $sbom = Get-Content $SbomPath -Raw | ConvertFrom-Json
-              $urls = @()
-              foreach ($comp in $sbom.components) {
-                $url = $null
-                foreach ($ref in $comp.externalReferences) {
-                  if ($ref.url -and ($ref.type -eq "vcs" -or $ref.type -eq "distribution" -or $ref.type -eq "website")) {
-                    $url = $ref.url; break
-                  }
-                }
-                if ($url) {
-                  $safeName = "$($comp.name)-$($comp.version)" -replace '[<>:"/\\|?*]', '_'
-                  $urls += [PSCustomObject]@{ Name = $comp.name; SafeName = $safeName; Url = $url }
-                }
-              }
-              Write-Host "Found $($urls.Count) download URLs"
-              $urls | ForEach-Object -Parallel {
-                $destDir = Join-Path $using:SourceDir $_.SafeName
-                if (-not (Test-Path $destDir)) {
-                  $null = New-Item -ItemType Directory -Path $destDir -Force
-                  try {
-                    Invoke-WebRequest -Uri $_.Url -OutFile (Join-Path $destDir "source.zip") -TimeoutSec 120 -ErrorAction Stop
-                    Write-Host "  [OK] $($_.Name)"
-                  } catch {
-                    Write-Host "  [FAIL] $($_.Name): $($_.Exception.Message)"
-                  }
-                } else {
-                  Write-Host "  [SKIP] $($_.Name) (already exists)"
-                }
-              } -ThrottleLimit 10
-            } -Args $sbomPath, $sourceDir
-          } else {
-            Write-Host "PowerShell 7 not available, falling back to sequential download"
-          }
-
-          # Always run capycli to update SBOM metadata with local file paths.
-          # If parallel download already fetched files, this is near-instant.
           Write-Host "=== Updating SBOM with local file paths ==="
           python -m capycli bom downloadsources `
             -i $sbomPath `
             -source $sourceDir `
             -o $outSbom `
             -v
+
+          # capycli bom downloadsources does NOT preserve custom properties
+          # like siemens:sw360Id. Merge them back from the input SBOM.
+          Write-Host "=== Restoring sw360Ids from input SBOM ==="
+          $inputSbom = Get-Content $sbomPath -Raw | ConvertFrom-Json
+          $outputSbom = Get-Content $outSbom -Raw | ConvertFrom-Json
+
+          # Build lookup: name@version → sw360Id from input
+          $idMap = @{}
+          foreach ($comp in $inputSbom.components) {
+            $key = "$($comp.name)@$($comp.version)"
+            foreach ($prop in $comp.properties) {
+              if ($prop.name -eq "siemens:sw360Id") {
+                $idMap[$key] = $prop.value
+                break
+              }
+            }
+          }
+          Write-Host "Found $($idMap.Count) sw360Ids in input SBOM"
+
+          # Apply sw360Ids to output SBOM components
+          $restored = 0
+          foreach ($comp in $outputSbom.components) {
+            $key = "$($comp.name)@$($comp.version)"
+            if ($idMap.ContainsKey($key)) {
+              # Check if sw360Id already exists in output
+              $hasId = $false
+              foreach ($prop in $comp.properties) {
+                if ($prop.name -eq "siemens:sw360Id") {
+                  $hasId = $true
+                  break
+                }
+              }
+              if (-not $hasId) {
+                $comp.properties += [PSCustomObject]@{
+                  name = "siemens:sw360Id"
+                  value = $idMap[$key]
+                }
+                $restored++
+              }
+            }
+          }
+          Write-Host "Restored $restored sw360Ids to output SBOM"
+
+          # Write back without BOM
+          $json = $outputSbom | ConvertTo-Json -Depth 10
+          [System.IO.File]::WriteAllText($outSbom, $json)
+          Write-Host "Updated $outSbom with sw360Ids preserved"
         shell: powershell
 
       - name: Verify sourced SBOM
@@ -796,13 +803,67 @@ jobs:
             -v
         shell: powershell
 
+      - name: Restore sw360Ids in final SBOM
+        run: |
+          # capycli bom createreleases may drop custom properties like
+          # siemens:sw360Id. Merge them back from sourced-sbom.json.
+          Write-Host "=== Restoring sw360Ids in final-sbom.json ==="
+          $srcSbom = Get-Content "sourced-sbom.json" -Raw | ConvertFrom-Json
+          $finalSbom = Get-Content "final-sbom.json" -Raw | ConvertFrom-Json
+
+          $idMap = @{}
+          foreach ($comp in $srcSbom.components) {
+            $key = "$($comp.name)@$($comp.version)"
+            foreach ($prop in $comp.properties) {
+              if ($prop.name -eq "siemens:sw360Id") {
+                $idMap[$key] = $prop.value
+                break
+              }
+            }
+          }
+          Write-Host "Found $($idMap.Count) sw360Ids in sourced-sbom.json"
+
+          $restored = 0
+          foreach ($comp in $finalSbom.components) {
+            $key = "$($comp.name)@$($comp.version)"
+            if ($idMap.ContainsKey($key)) {
+              $hasId = $false
+              foreach ($prop in $comp.properties) {
+                if ($prop.name -eq "siemens:sw360Id") {
+                  $hasId = $true
+                  break
+                }
+              }
+              if (-not $hasId) {
+                $comp.properties += [PSCustomObject]@{
+                  name = "siemens:sw360Id"
+                  value = $idMap[$key]
+                }
+                $restored++
+              }
+            }
+          }
+          Write-Host "Restored $restored sw360Ids to final-sbom.json"
+
+          $json = $finalSbom | ConvertTo-Json -Depth 10
+          [System.IO.File]::WriteAllText("final-sbom.json", $json)
+          Write-Host "final-sbom.json updated with sw360Ids preserved"
+        shell: powershell
+
       - name: Verify final SBOM
         run: |
           if (-not (Test-Path final-sbom.json)) {
             Write-Host "ERROR: final-sbom.json not found"
             exit 1
           }
-          Write-Host "final-sbom.json created successfully ($(Get-Item final-sbom.json).Length bytes)"
+          $final = Get-Content final-sbom.json -Raw | ConvertFrom-Json
+          $withIds = 0
+          foreach ($comp in $final.components) {
+            foreach ($prop in $comp.properties) {
+              if ($prop.name -eq "siemens:sw360Id") { $withIds++; break }
+            }
+          }
+          Write-Host "final-sbom.json created successfully ($(Get-Item final-sbom.json).Length bytes, $withIds components with sw360Id)"
         shell: powershell
 
       # Upload per-dependency scan reports to SW360
