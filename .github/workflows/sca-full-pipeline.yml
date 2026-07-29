@@ -34,7 +34,7 @@ jobs:
   # Job 1.1: Generate CycloneDX SBOM with cdxgen
   # ────────────────────────────────────────────────────────────────────────────
   generate-sbom:
-    name: "Stage 1 · Generate SBOM"
+    name: "📦 Generate SBOM"
     runs-on: [self-hosted, linux]
 
     steps:
@@ -103,7 +103,7 @@ jobs:
   # Job 1.2: Map SBOM to SW360 + Create missing components & releases
   # ────────────────────────────────────────────────────────────────────────────
   map-and-create:
-    name: "Stage 1 · Map & create in SW360"
+    name: "🗺️ Map & create in SW360"
     runs-on: [self-hosted, linux]
     needs: generate-sbom
     timeout-minutes: 60
@@ -198,7 +198,7 @@ jobs:
   # Job 1.3: Create/update SW360 project + Capture project ID
   # ────────────────────────────────────────────────────────────────────────────
   create-project:
-    name: "Stage 1 · Create SW360 project"
+    name: "📋 Create SW360 project"
     runs-on: [self-hosted, linux]
     needs: map-and-create
     timeout-minutes: 30
@@ -271,17 +271,6 @@ jobs:
           path: project-id.txt
 
   # ╔══════════════════════════════════════════════════════════════════════════╗
-  # ║  STAGE 1 GATE — All Stage 1 jobs must pass before Stage 2               ║
-  # ╚══════════════════════════════════════════════════════════════════════════╝
-  stage-1-gate:
-    name: "✔ Stage 1 complete"
-    runs-on: [self-hosted, linux]
-    needs: [generate-sbom, map-and-create, create-project]
-    if: success()
-    steps:
-      - run: echo "Stage 1 passed — proceeding to clearing & scanning"
-
-  # ╔══════════════════════════════════════════════════════════════════════════╗
   # ║  STAGE 2 — Clearing State Filtering & FOSSology Scan                   ║
   # ║  Filters SBOM to only non-cleared releases, downloads sources,         ║
   # ║  and runs FOSSology scanners for license/copyright detection.          ║
@@ -291,9 +280,9 @@ jobs:
   # Job 2.1: Filter SBOM by clearing state (skip already-cleared releases)
   # ────────────────────────────────────────────────────────────────────────────
   filter-by-clearing-state:
-    name: "Stage 2 · Filter by clearing state"
+    name: "🔍 Filter by clearing state"
     runs-on: [self-hosted, linux]
-    needs: stage-1-gate
+    needs: create-project
     timeout-minutes: 30
 
     steps:
@@ -406,7 +395,7 @@ jobs:
   # Job 2.2: Download sources & Run FOSSology scan
   # ────────────────────────────────────────────────────────────────────────────
   scan-fossology:
-    name: "Stage 2 · Download & FOSSology scan"
+    name: "🛡️ Download & FOSSology scan"
     runs-on: [self-hosted, linux]
     needs: filter-by-clearing-state
     timeout-minutes: 120
@@ -522,17 +511,6 @@ jobs:
             ${{ env.REPORT_DIR }}/
 
   # ╔══════════════════════════════════════════════════════════════════════════╗
-  # ║  STAGE 2 GATE — All Stage 2 jobs must pass before Stage 3               ║
-  # ╚══════════════════════════════════════════════════════════════════════════╝
-  stage-2-gate:
-    name: "✔ Stage 2 complete"
-    runs-on: [self-hosted, linux]
-    needs: [filter-by-clearing-state, scan-fossology]
-    if: success()
-    steps:
-      - run: echo "Stage 2 passed — proceeding to upload & validation"
-
-  # ╔══════════════════════════════════════════════════════════════════════════╗
   # ║  STAGE 3 — Upload to SW360 & Validation                                ║
   # ║  Uploads scan reports and source files to SW360 releases, then         ║
   # ║  validates that all prerequisites are met for the project.             ║
@@ -542,9 +520,9 @@ jobs:
   # Job 3.1: Upload sources & scan reports to SW360
   # ────────────────────────────────────────────────────────────────────────────
   upload-to-sw360:
-    name: "Stage 3 · Upload to SW360"
+    name: "📤 Upload to SW360"
     runs-on: [self-hosted, linux]
-    needs: stage-2-gate
+    needs: scan-fossology
     timeout-minutes: 120
 
     steps:
@@ -723,7 +701,7 @@ jobs:
   # Job 3.2: Validate pipeline completeness
   # ────────────────────────────────────────────────────────────────────────────
   validate-pipeline:
-    name: "Stage 3 · Validate pipeline"
+    name: "✅ Validate pipeline"
     runs-on: [self-hosted, linux]
     needs: upload-to-sw360
     timeout-minutes: 30
@@ -801,14 +779,3 @@ jobs:
             results/
             ${{ env.REPORT_DIR }}/
           if-no-files-found: warn
-
-  # ╔══════════════════════════════════════════════════════════════════════════╗
-  # ║  STAGE 3 GATE — Pipeline complete                                       ║
-  # ╚══════════════════════════════════════════════════════════════════════════╝
-  stage-3-gate:
-    name: "✔ Pipeline complete"
-    runs-on: [self-hosted, linux]
-    needs: [upload-to-sw360, validate-pipeline]
-    if: success()
-    steps:
-      - run: echo "All 3 stages passed — SCA pipeline completed successfully"
