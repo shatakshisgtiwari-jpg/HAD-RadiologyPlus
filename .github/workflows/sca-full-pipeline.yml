@@ -10,7 +10,7 @@ on:
       - 'pom.xml'
       - 'allowlist.json'
       - '.github/workflows/sca-full-pipeline.yml'
-  workflow_dispatch:    # manual trigger needed
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -24,11 +24,17 @@ env:
   SOURCE_DIR: sources
 
 jobs:
+  # ╔══════════════════════════════════════════════════════════════════════════╗
+  # ║  STAGE 1 — SBOM Generation & SW360 Sync                                ║
+  # ║  Generates SBOM, maps to SW360, creates missing components/releases,   ║
+  # ║  and creates/updates the SW360 project.                                ║
+  # ╚══════════════════════════════════════════════════════════════════════════╝
+
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 1: Generate SBOM with cdxgen
+  # Job 1.1: Generate CycloneDX SBOM with cdxgen
   # ────────────────────────────────────────────────────────────────────────────
   generate-sbom:
-    name: "Step 1 · Generate CycloneDX SBOM"
+    name: "Stage 1 · Generate SBOM"
     runs-on: [self-hosted, linux]
 
     steps:
@@ -59,15 +65,33 @@ jobs:
       - name: Generate SBOM
         run: cdxgen -r -o sbom.json --spec-version 1.6 --format json
 
-      - name: Verify SBOM was created
+      - name: Verify and filter SBOM
         run: |
           if [ ! -f sbom.json ]; then
             echo "::error::sbom.json not found!"
             exit 1
           fi
-          comp_count=$(jq '.components | length' sbom.json)
-          with_urls=$(jq '[.components[] | select(.externalReferences[]?.comment == "source archive (download location)" or .externalReferences[]?.comment == "binary (download location)")] | length' sbom.json)
-          echo "sbom.json created successfully - $comp_count components, $with_urls with download URLs"
+          before=$(jq '.components | length' sbom.json)
+
+          # Remove GitHub Actions components (pkg:githubactions/...)
+          # These are CI pipeline tools, not project dependencies.
+          jq '
+            . as $root |
+            (.components | map(select(
+              (.purl // "") | test("^pkg:githubactions/") | not
+            ))) as $filtered |
+            ($filtered | map(."bom-ref")) as $keep_refs |
+            .components = $filtered |
+            if .dependencies then
+              .dependencies = [
+                .dependencies[] | select(.ref as $r | $keep_refs | index($r) != null)
+              ]
+            else . end
+          ' sbom.json > sbom.json.tmp && mv sbom.json.tmp sbom.json
+
+          after=$(jq '.components | length' sbom.json)
+          removed=$(( before - after ))
+          echo "SBOM: $after components ($removed GitHub Actions filtered out)"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -76,10 +100,10 @@ jobs:
           if-no-files-found: error
 
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 2: Map SBOM to SW360
+  # Job 1.2: Map SBOM to SW360 + Create missing components & releases
   # ────────────────────────────────────────────────────────────────────────────
-  map-to-sw360:
-    name: "Step 2 · Map to SW360"
+  map-and-create:
+    name: "Stage 1 · Map & create in SW360"
     runs-on: [self-hosted, linux]
     needs: generate-sbom
     timeout-minutes: 60
@@ -129,25 +153,7 @@ jobs:
             --matchmode full-search,all-versions \
             -v
 
-      - name: Verify mapped SBOM
-        run: |
-          if [ ! -f mapped-sbom.json ]; then
-            echo "ERROR: mapped-sbom.json not found"
-            exit 1
-          fi
-          echo "mapped-sbom.json created successfully"
-
-      # Upload mapping results for debugging
-      - name: Upload mapping results (debug)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: mapping-result
-          path: mapping-result.json
-
-      # ── Inline Step 3: Create missing components & releases ──
-
-      - name: Create missing components
+      - name: Create missing components (with source download)
         run: |
           python -m capycli bom createcomponents \
             -i mapped-sbom.json \
@@ -166,14 +172,21 @@ jobs:
             -t ${{ secrets.SW360_TOKEN }} \
             -v
 
-      - name: Verify created SBOM
+      - name: Verify and upload created SBOM
         run: |
           if [ ! -f created-sbom.json ]; then
             echo "ERROR: created-sbom.json not found"
             exit 1
           fi
           size=$(stat -c%s created-sbom.json)
-          echo "created-sbom.json created successfully ($size bytes)"
+          echo "created-sbom.json: $size bytes"
+
+      - name: Upload mapping results (debug)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mapping-result
+          path: mapping-result.json
 
       - name: Upload created SBOM
         uses: actions/upload-artifact@v4
@@ -182,12 +195,12 @@ jobs:
           path: created-sbom.json
 
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 3: Create/update SW360 project + Capture project ID
+  # Job 1.3: Create/update SW360 project + Capture project ID
   # ────────────────────────────────────────────────────────────────────────────
   create-project:
-    name: "Step 3 · Create/update SW360 project"
+    name: "Stage 1 · Create SW360 project"
     runs-on: [self-hosted, linux]
-    needs: map-to-sw360
+    needs: map-and-create
     timeout-minutes: 30
 
     steps:
@@ -238,60 +251,13 @@ jobs:
       - name: Capture SW360 project ID
         id: get-project-id
         run: |
-          echo "=== Capturing SW360 project ID ==="
-          project_id=""
-
-          # Method 1: Try capycli project find (search by name)
-          echo "Method 1: Searching via capycli project find..."
-          output=$(python -m capycli project find \
+          projectId=$(python -m capycli project find \
             -name "${{ env.PROJECT_NAME }}" \
+            -version "${{ env.PROJECT_VERSION }}" \
             -url ${{ vars.SW360_URL }} \
-            -t ${{ secrets.SW360_TOKEN }} 2>&1)
-          match=$(echo "$output" | grep -oP '[a-f0-9]{32}' | head -1)
-          if [ -n "$match" ]; then
-            project_id="$match"
-            echo "Found project ID via search: $project_id"
-          fi
-
-          # Method 2: Query SW360 API directly
-          if [ -z "$project_id" ]; then
-            echo "Method 2: Querying SW360 API directly..."
-            token="${{ secrets.SW360_TOKEN }}"
-            url="${{ vars.SW360_URL }}"
-            search_url="$url/resource/api/search?type=project&searchText=${{ env.PROJECT_NAME }}&pagination=0&elements=10"
-            response=$(curl -s -f -H "X-CSRF-Token: $token" -H "Authorization: Token $token" "$search_url" 2>/dev/null) || true
-            if [ -n "$response" ]; then
-              project_id=$(echo "$response" | jq -r --arg name "${{ env.PROJECT_NAME }}" --arg ver "${{ env.PROJECT_VERSION }}" '
-                ._embedded["sw360:projects"][] | select(.name == $name and .version == $ver) | ._links.self.href | split("/")[-1]' 2>/dev/null)
-              if [ -n "$project_id" ]; then
-                echo "Found project ID via API: $project_id"
-              fi
-            fi
-          fi
-
-          # Method 3: List all projects
-          if [ -z "$project_id" ]; then
-            echo "Method 3: Listing all projects..."
-            token="${{ secrets.SW360_TOKEN }}"
-            url="${{ vars.SW360_URL }}"
-            list_url="$url/resource/api/projects?pagination=0&elements=50"
-            response=$(curl -s -f -H "X-CSRF-Token: $token" -H "Authorization: Token $token" "$list_url" 2>/dev/null) || true
-            if [ -n "$response" ]; then
-              project_id=$(echo "$response" | jq -r --arg name "${{ env.PROJECT_NAME }}" --arg ver "${{ env.PROJECT_VERSION }}" '
-                ._embedded["sw360:projects"][] | select(.name == $name and .version == $ver) | ._links.self.href | split("/")[-1]' 2>/dev/null)
-              if [ -n "$project_id" ]; then
-                echo "Found project ID via listing: $project_id"
-              fi
-            fi
-          fi
-
-          if [ -n "$project_id" ]; then
-            echo "SUCCESS: Project ID = $project_id"
-            echo "project_id=$project_id" >> "$GITHUB_OUTPUT"
-          else
-            echo "ERROR: Could not find project ID"
-            exit 1
-          fi
+            -t ${{ secrets.SW360_TOKEN }} \
+            --id-only)
+          echo "project_id=$projectId" >> "$GITHUB_OUTPUT"
 
       - name: Save project ID to file
         run: |
@@ -304,13 +270,30 @@ jobs:
           name: project-id
           path: project-id.txt
 
+  # ╔══════════════════════════════════════════════════════════════════════════╗
+  # ║  STAGE 1 GATE — All Stage 1 jobs must pass before Stage 2               ║
+  # ╚══════════════════════════════════════════════════════════════════════════╝
+  stage-1-gate:
+    name: "✔ Stage 1 complete"
+    runs-on: [self-hosted, linux]
+    needs: [generate-sbom, map-and-create, create-project]
+    if: success()
+    steps:
+      - run: echo "Stage 1 passed — proceeding to clearing & scanning"
+
+  # ╔══════════════════════════════════════════════════════════════════════════╗
+  # ║  STAGE 2 — Clearing State Filtering & FOSSology Scan                   ║
+  # ║  Filters SBOM to only non-cleared releases, downloads sources,         ║
+  # ║  and runs FOSSology scanners for license/copyright detection.          ║
+  # ╚══════════════════════════════════════════════════════════════════════════╝
+
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 4: Filter SBOM by clearing state
+  # Job 2.1: Filter SBOM by clearing state (skip already-cleared releases)
   # ────────────────────────────────────────────────────────────────────────────
   filter-by-clearing-state:
-    name: "Step 4 · Filter by clearing state"
+    name: "Stage 2 · Filter by clearing state"
     runs-on: [self-hosted, linux]
-    needs: map-to-sw360
+    needs: stage-1-gate
     timeout-minutes: 30
 
     steps:
@@ -334,13 +317,10 @@ jobs:
           total=$(jq '.components | length' "$sbom_path")
           echo "=== Filtering $total components by clearing state ==="
 
-          # Build a jq filter script that checks clearing state for each component
-          # We'll process components one by one using curl + jq
           included="[]"
           skipped="[]"
           errors="[]"
 
-          # Read component list into a variable for iteration
           comp_count=$(jq '.components | length' "$sbom_path")
 
           for i in $(seq 0 $((comp_count - 1))); do
@@ -350,18 +330,15 @@ jobs:
             sw360_id=$(echo "$comp" | jq -r '.properties[]? | select(.name == "siemens:sw360Id") | .value' 2>/dev/null)
 
             if [ -z "$sw360_id" ] || [ "$sw360_id" = "null" ]; then
-              # No SW360 ID — new/unmapped component, include it
               included=$(echo "$included" | jq ". + [$comp]")
               echo "  [INCLUDE] $name@$version (no SW360 ID)"
               continue
             fi
 
-            # Query SW360 for clearing state
             release_url="$sw360_url/resource/api/releases/$sw360_id"
             response=$(curl -s -H "Authorization: Token $token" "$release_url" 2>/dev/null) || true
 
             if [ -z "$response" ]; then
-              # Query failed — include to be safe
               included=$(echo "$included" | jq ". + [$comp]")
               errors=$(echo "$errors" | jq ". + [$comp]")
               echo "  [INCLUDE] $name@$version - query error"
@@ -371,26 +348,21 @@ jobs:
             clearing_state=$(echo "$response" | jq -r '.clearingState // empty')
 
             if [ -z "$clearing_state" ]; then
-              # No clearing state set — needs clearing
               included=$(echo "$included" | jq ". + [$comp]")
               echo "  [INCLUDE] $name@$version (no clearing state)"
             elif [ "$clearing_state" = "REPORT_AVAILABLE" ] || [ "$clearing_state" = "APPROVED" ]; then
               skipped=$(echo "$skipped" | jq ". + [$comp]")
               echo "  [SKIP]    $name@$version - clearingState=$clearing_state"
             else
-              # NEW_CLEARING, SENT_TO_CLEARING_TOOL, UNDER_CLEARING — needs clearing
               included=$(echo "$included" | jq ". + [$comp]")
               echo "  [INCLUDE] $name@$version - clearingState=$clearing_state"
             fi
           done
 
-          # Build filtered SBOM with included components
           jq --argjson included "$included" '.components = $included' "$sbom_path" > "$out_path.tmp"
 
-          # Build set of included bom-refs for dependency filtering
           included_refs=$(echo "$included" | jq '[.[]."bom-ref"]')
 
-          # Filter dependencies
           jq --argjson included_refs "$included_refs" '
             if .dependencies then
               .dependencies = [
@@ -414,7 +386,6 @@ jobs:
           echo "Included (need scan): $included_count"
           echo "Skipped (already cleared): $skipped_count"
           echo "Query errors:         $errors_count"
-          echo "Filtered SBOM saved to: $out_path ($(stat -c%s "$out_path") bytes)"
 
       - name: Verify filtered SBOM
         run: |
@@ -423,7 +394,7 @@ jobs:
             exit 1
           fi
           comp_count=$(jq '.components | length' filtered-sbom.json)
-          echo "filtered-sbom.json created - $comp_count components remaining"
+          echo "filtered-sbom.json: $comp_count components remaining"
 
       - name: Upload filtered SBOM
         uses: actions/upload-artifact@v4
@@ -432,10 +403,10 @@ jobs:
           path: filtered-sbom.json
 
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 5: Download sources + FOSSology scan
+  # Job 2.2: Download sources & Run FOSSology scan
   # ────────────────────────────────────────────────────────────────────────────
   scan-fossology:
-    name: "Step 5 · Download sources & Scan"
+    name: "Stage 2 · Download & FOSSology scan"
     runs-on: [self-hosted, linux]
     needs: filter-by-clearing-state
     timeout-minutes: 120
@@ -474,7 +445,6 @@ jobs:
           fi
         working-directory: ${{ env.CAPYCLI_DIR }}
 
-      # Download sources using capycli, then merge sw360Ids back
       - name: Download dependency sources
         run: |
           sbom_path="filtered-sbom.json"
@@ -483,23 +453,19 @@ jobs:
 
           mkdir -p "$source_dir"
 
-          echo "=== Updating SBOM with local file paths ==="
+          echo "=== Downloading sources ==="
           python -m capycli bom downloadsources \
             -i "$sbom_path" \
             -source "$source_dir" \
             -o "$out_sbom" \
             -v
 
-          # capycli bom downloadsources does NOT preserve custom properties
-          # like siemens:sw360Id. Merge them back from the input SBOM.
-          echo "=== Restoring sw360Ids from input SBOM ==="
-
-          # Build lookup: name@version → sw360Id from input
+          # Restore sw360Ids (capycli bom downloadsources drops custom properties)
+          echo "=== Restoring sw360Ids ==="
           id_map=$(jq '[.components[] | {key: "\(.name)@\(.version)", id: (.properties[]? | select(.name == "siemens:sw360Id") | .value)}] | from_entries' "$sbom_path")
           id_count=$(echo "$id_map" | jq 'length')
           echo "Found $id_count sw360Ids in input SBOM"
 
-          # Apply sw360Ids to output SBOM components
           jq --argjson id_map "$id_map" '
             .components |= map(
               .key = "\(.name)@\(.version)" |
@@ -511,8 +477,7 @@ jobs:
           ' "$out_sbom" > "${out_sbom}.tmp" && mv "${out_sbom}.tmp" "$out_sbom"
 
           restored=$(jq '[.components[] | .properties[]? | select(.name == "siemens:sw360Id")] | length' "$out_sbom")
-          echo "Restored sw360Ids to output SBOM (total components with sw360Id: $restored)"
-          echo "Updated $out_sbom with sw360Ids preserved"
+          echo "sw360Ids restored: $restored components"
 
       - name: Verify sourced SBOM
         run: |
@@ -520,8 +485,7 @@ jobs:
             echo "ERROR: sourced-sbom.json not found"
             exit 1
           fi
-          size=$(stat -c%s sourced-sbom.json)
-          echo "sourced-sbom.json created successfully ($size bytes)"
+          echo "sourced-sbom.json: $(stat -c%s sourced-sbom.json) bytes"
 
       - name: Run FOSSology analysis
         id: fossology
@@ -540,12 +504,11 @@ jobs:
             echo "ERROR: results/sbom_spdx.json not found"
             exit 1
           fi
-          size=$(stat -c%s "results/sbom_spdx.json")
-          echo "OK: results/sbom_spdx.json exists ($size bytes)"
+          echo "OK: results/sbom_spdx.json ($(stat -c%s results/sbom_spdx.json) bytes)"
           report_files=$(find ${{ env.REPORT_DIR }} -name "*.spdx.json" -type f 2>/dev/null | wc -l)
           echo "Per-dependency reports: $report_files"
           if [ "$report_files" -eq 0 ]; then
-            echo "WARNING: No per-dependency reports generated - will use consolidated report only"
+            echo "WARNING: No per-dependency reports - will use consolidated report only"
           fi
 
       - name: Upload scan artifacts
@@ -558,13 +521,30 @@ jobs:
             results/
             ${{ env.REPORT_DIR }}/
 
+  # ╔══════════════════════════════════════════════════════════════════════════╗
+  # ║  STAGE 2 GATE — All Stage 2 jobs must pass before Stage 3               ║
+  # ╚══════════════════════════════════════════════════════════════════════════╝
+  stage-2-gate:
+    name: "✔ Stage 2 complete"
+    runs-on: [self-hosted, linux]
+    needs: [filter-by-clearing-state, scan-fossology]
+    if: success()
+    steps:
+      - run: echo "Stage 2 passed — proceeding to upload & validation"
+
+  # ╔══════════════════════════════════════════════════════════════════════════╗
+  # ║  STAGE 3 — Upload to SW360 & Validation                                ║
+  # ║  Uploads scan reports and source files to SW360 releases, then         ║
+  # ║  validates that all prerequisites are met for the project.             ║
+  # ╚══════════════════════════════════════════════════════════════════════════╝
+
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 6: Upload sources & reports to SW360
+  # Job 3.1: Upload sources & scan reports to SW360
   # ────────────────────────────────────────────────────────────────────────────
   upload-to-sw360:
-    name: "Step 6 · Upload to SW360"
+    name: "Stage 3 · Upload to SW360"
     runs-on: [self-hosted, linux]
-    needs: scan-fossology
+    needs: stage-2-gate
     timeout-minutes: 120
 
     steps:
@@ -621,10 +601,7 @@ jobs:
 
       - name: Restore sw360Ids in final SBOM
         run: |
-          # capycli bom createreleases may drop custom properties like
-          # siemens:sw360Id. Merge them back from sourced-sbom.json.
           echo "=== Restoring sw360Ids in final-sbom.json ==="
-
           id_map=$(jq '[.components[] | {key: "\(.name)@\(.version)", id: (.properties[]? | select(.name == "siemens:sw360Id") | .value)}] | from_entries' "sourced-sbom.json")
           id_count=$(echo "$id_map" | jq 'length')
           echo "Found $id_count sw360Ids in sourced-sbom.json"
@@ -640,7 +617,7 @@ jobs:
           ' "final-sbom.json" > "final-sbom.json.tmp" && mv "final-sbom.json.tmp" "final-sbom.json"
 
           with_ids=$(jq '[.components[] | select(.properties[]?.name == "siemens:sw360Id")] | length' "final-sbom.json")
-          echo "final-sbom.json updated with sw360Ids preserved ($with_ids components with sw360Id)"
+          echo "final-sbom.json: $with_ids components with sw360Id"
 
       - name: Verify final SBOM
         run: |
@@ -650,9 +627,8 @@ jobs:
           fi
           size=$(stat -c%s final-sbom.json)
           with_ids=$(jq '[.components[] | select(.properties[]?.name == "siemens:sw360Id")] | length' final-sbom.json)
-          echo "final-sbom.json created successfully ($size bytes, $with_ids components with sw360Id)"
+          echo "final-sbom.json: $size bytes, $with_ids components with sw360Id"
 
-      # Upload per-dependency scan reports to SW360
       - name: Upload per-dependency scan reports to SW360
         run: |
           report_files=$(find ${{ env.REPORT_DIR }} -name "*.spdx.json" -type f 2>/dev/null)
@@ -690,17 +666,16 @@ jobs:
             done
 
             if [ "$last_exit" -ne 0 ]; then
-              echo "::warning::Per-dependency upload failed after $max_retries attempts (exit code $last_exit)"
+              echo "::warning::Per-dependency upload failed after $max_retries attempts"
             fi
           else
-            echo "WARNING: No per-dependency reports found - skipping per-dependency upload"
+            echo "WARNING: No per-dependency reports found - skipping"
           fi
 
-      # Also upload the consolidated report as a fallback
       - name: Upload consolidated scan report to SW360
         run: |
           if [ -f "results/sbom_spdx.json" ]; then
-            echo "Uploading consolidated report to all releases..."
+            echo "Uploading consolidated report..."
             max_retries=3
             retry_delay=30
             last_exit=0
@@ -719,7 +694,7 @@ jobs:
               last_exit=$?
 
               if [ "$last_exit" -eq 0 ]; then
-                echo "Consolidated upload completed successfully on attempt $attempt"
+                echo "Consolidated upload completed on attempt $attempt"
                 break
               else
                 echo "Consolidated upload failed (exit code $last_exit) on attempt $attempt"
@@ -731,7 +706,7 @@ jobs:
             done
 
             if [ "$last_exit" -ne 0 ]; then
-              echo "::warning::Consolidated report upload failed after $max_retries attempts (exit code $last_exit)"
+              echo "::warning::Consolidated upload failed after $max_retries attempts"
             fi
           else
             echo "WARNING: Consolidated report not found - skipping"
@@ -745,10 +720,10 @@ jobs:
           path: final-sbom.json
 
   # ────────────────────────────────────────────────────────────────────────────
-  # JOB 7: Validate pipeline completeness
+  # Job 3.2: Validate pipeline completeness
   # ────────────────────────────────────────────────────────────────────────────
   validate-pipeline:
-    name: "Step 7 · Validate pipeline"
+    name: "Stage 3 · Validate pipeline"
     runs-on: [self-hosted, linux]
     needs: upload-to-sw360
     timeout-minutes: 30
@@ -826,3 +801,14 @@ jobs:
             results/
             ${{ env.REPORT_DIR }}/
           if-no-files-found: warn
+
+  # ╔══════════════════════════════════════════════════════════════════════════╗
+  # ║  STAGE 3 GATE — Pipeline complete                                       ║
+  # ╚══════════════════════════════════════════════════════════════════════════╝
+  stage-3-gate:
+    name: "✔ Pipeline complete"
+    runs-on: [self-hosted, linux]
+    needs: [upload-to-sw360, validate-pipeline]
+    if: success()
+    steps:
+      - run: echo "All 3 stages passed — SCA pipeline completed successfully"
