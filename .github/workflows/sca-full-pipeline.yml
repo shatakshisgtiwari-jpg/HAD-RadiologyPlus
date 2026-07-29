@@ -29,7 +29,7 @@ jobs:
   # ────────────────────────────────────────────────────────────────────────────
   generate-sbom:
     name: "Step 1 · Generate CycloneDX SBOM"
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux]
 
     steps:
       - name: Checkout project
@@ -80,7 +80,7 @@ jobs:
   # ────────────────────────────────────────────────────────────────────────────
   map-to-sw360:
     name: "Step 2 · Map to SW360"
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux]
     needs: generate-sbom
     timeout-minutes: 60
 
@@ -186,7 +186,7 @@ jobs:
   # ────────────────────────────────────────────────────────────────────────────
   create-project:
     name: "Step 3 · Create/update SW360 project"
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux]
     needs: map-to-sw360
     timeout-minutes: 30
 
@@ -309,7 +309,7 @@ jobs:
   # ────────────────────────────────────────────────────────────────────────────
   filter-by-clearing-state:
     name: "Step 4 · Filter by clearing state"
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux]
     needs: map-to-sw360
     timeout-minutes: 30
 
@@ -436,7 +436,7 @@ jobs:
   # ────────────────────────────────────────────────────────────────────────────
   scan-fossology:
     name: "Step 5 · Download sources & Scan"
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux]
     needs: filter-by-clearing-state
     timeout-minutes: 120
 
@@ -563,7 +563,7 @@ jobs:
   # ────────────────────────────────────────────────────────────────────────────
   upload-to-sw360:
     name: "Step 6 · Upload to SW360"
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux]
     needs: scan-fossology
     timeout-minutes: 120
 
@@ -749,7 +749,7 @@ jobs:
   # ────────────────────────────────────────────────────────────────────────────
   validate-pipeline:
     name: "Step 7 · Validate pipeline"
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux]
     needs: upload-to-sw360
     timeout-minutes: 30
 
