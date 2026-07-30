@@ -521,11 +521,19 @@ jobs:
 
           mkdir -p results
 
-          # Use full fossology image (not :scanner) because the scanner-only
-          # image lacks /usr/local/etc/fossology/fossology.conf which ojo/copyright need.
+          # IMPORTANT: fossology/fossology:scanner's image ENTRYPOINT is ["bash", "-c"].
+          # If we pass "/bin/fossologyscanner ojo copyright ..." as SEPARATE docker args,
+          # bash -c only treats the FIRST token as the command to run (the rest become
+          # $0, $1, ... and are silently ignored) - this is why the raw "ojo" binary was
+          # being executed directly (bypassing the wrapper's config setup) and failing
+          # with "unable to open configuration file fossology.conf".
+          #
+          # Fix: override --entrypoint to call /bin/fossologyscanner (a Python script,
+          # see fossology/fossology utils/automation/fossologyscanner.py) directly, so
+          # normal argv parsing applies.
           docker run --rm \
             --user root \
-            --entrypoint ojo \
+            --entrypoint /bin/fossologyscanner \
             -w /opt/repo \
             -v "$(pwd):/opt/repo" \
             -e "GITHUB_TOKEN=${{ github.token }}" \
@@ -534,8 +542,8 @@ jobs:
             -e "GITHUB_REPO_URL=${{ github.server_url }}/${{ github.repository }}" \
             -e "GITHUB_REPO_OWNER=${{ github.repository_owner }}" \
             -e "GITHUB_ACTIONS=true" \
-            fossology/fossology \
-            copyright \
+            fossology/fossology:scanner \
+            ojo copyright \
             scan-only-deps \
             --report SPDX_JSON \
             --sbom-path filtered-sbom.json 2>&1 | tee fossology-docker-debug.log
