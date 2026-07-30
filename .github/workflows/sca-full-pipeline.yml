@@ -135,15 +135,25 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install CapyCLI (if needed)
+      - name: Get capycli commit SHA
+        id: capycli-sha
         run: |
-          if ! pip list 2>/dev/null | grep -q "^capycli "; then
-            echo "Installing CapyCLI..."
-            pip install . --force-reinstall
-            if [ $? -ne 0 ]; then exit 1; fi
-          else
-            echo "CapyCLI already installed"
-          fi
+          cd ${{ env.CAPYCLI_DIR }}
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache capycli installation
+        id: cache-capycli
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CAPYCLI_DIR }}/.installed
+          key: capycli-${{ runner.os }}-py3.11-${{ steps.capycli-sha.outputs.sha }}
+
+      - name: Install CapyCLI
+        if: steps.cache-capycli.outputs.cache-hit != 'true'
+        run: |
+          pip install . --force-reinstall
+          mkdir -p ${{ env.CAPYCLI_DIR }}/.installed
+          touch ${{ env.CAPYCLI_DIR }}/.installed/marker
         working-directory: ${{ env.CAPYCLI_DIR }}
 
       - name: Map SBOM to SW360
@@ -229,15 +239,25 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install CapyCLI (if needed)
+      - name: Get capycli commit SHA
+        id: capycli-sha
         run: |
-          if ! pip list 2>/dev/null | grep -q "^capycli "; then
-            echo "Installing CapyCLI..."
-            pip install . --force-reinstall
-            if [ $? -ne 0 ]; then exit 1; fi
-          else
-            echo "CapyCLI already installed"
-          fi
+          cd ${{ env.CAPYCLI_DIR }}
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache capycli installation
+        id: cache-capycli
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CAPYCLI_DIR }}/.installed
+          key: capycli-${{ runner.os }}-py3.11-${{ steps.capycli-sha.outputs.sha }}
+
+      - name: Install CapyCLI
+        if: steps.cache-capycli.outputs.cache-hit != 'true'
+        run: |
+          pip install . --force-reinstall
+          mkdir -p ${{ env.CAPYCLI_DIR }}/.installed
+          touch ${{ env.CAPYCLI_DIR }}/.installed/marker
         working-directory: ${{ env.CAPYCLI_DIR }}
 
       - name: Create or update SW360 project
@@ -426,15 +446,25 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install CapyCLI (if needed)
+      - name: Get capycli commit SHA
+        id: capycli-sha
         run: |
-          if ! pip list 2>/dev/null | grep -q "^capycli "; then
-            echo "Installing CapyCLI..."
-            pip install . --force-reinstall
-            if [ $? -ne 0 ]; then exit 1; fi
-          else
-            echo "CapyCLI already installed"
-          fi
+          cd ${{ env.CAPYCLI_DIR }}
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache capycli installation
+        id: cache-capycli
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CAPYCLI_DIR }}/.installed
+          key: capycli-${{ runner.os }}-py3.11-${{ steps.capycli-sha.outputs.sha }}
+
+      - name: Install CapyCLI
+        if: steps.cache-capycli.outputs.cache-hit != 'true'
+        run: |
+          pip install . --force-reinstall
+          mkdir -p ${{ env.CAPYCLI_DIR }}/.installed
+          touch ${{ env.CAPYCLI_DIR }}/.installed/marker
         working-directory: ${{ env.CAPYCLI_DIR }}
 
       - name: Download dependency sources
@@ -552,15 +582,25 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install CapyCLI (if needed)
+      - name: Get capycli commit SHA
+        id: capycli-sha
         run: |
-          if ! pip list 2>/dev/null | grep -q "^capycli "; then
-            echo "Installing CapyCLI..."
-            pip install . --force-reinstall
-            if [ $? -ne 0 ]; then exit 1; fi
-          else
-            echo "CapyCLI already installed"
-          fi
+          cd ${{ env.CAPYCLI_DIR }}
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache capycli installation
+        id: cache-capycli
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CAPYCLI_DIR }}/.installed
+          key: capycli-${{ runner.os }}-py3.11-${{ steps.capycli-sha.outputs.sha }}
+
+      - name: Install CapyCLI
+        if: steps.cache-capycli.outputs.cache-hit != 'true'
+        run: |
+          pip install . --force-reinstall
+          mkdir -p ${{ env.CAPYCLI_DIR }}/.installed
+          touch ${{ env.CAPYCLI_DIR }}/.installed/marker
         working-directory: ${{ env.CAPYCLI_DIR }}
 
       - name: Restore files to working directory
@@ -737,15 +777,25 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install CapyCLI (if needed)
+      - name: Get capycli commit SHA
+        id: capycli-sha
         run: |
-          if ! pip list 2>/dev/null | grep -q "^capycli "; then
-            echo "Installing CapyCLI..."
-            pip install . --force-reinstall
-            if [ $? -ne 0 ]; then exit 1; fi
-          else
-            echo "CapyCLI already installed"
-          fi
+          cd ${{ env.CAPYCLI_DIR }}
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache capycli installation
+        id: cache-capycli
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CAPYCLI_DIR }}/.installed
+          key: capycli-${{ runner.os }}-py3.11-${{ steps.capycli-sha.outputs.sha }}
+
+      - name: Install CapyCLI
+        if: steps.cache-capycli.outputs.cache-hit != 'true'
+        run: |
+          pip install . --force-reinstall
+          mkdir -p ${{ env.CAPYCLI_DIR }}/.installed
+          touch ${{ env.CAPYCLI_DIR }}/.installed/marker
         working-directory: ${{ env.CAPYCLI_DIR }}
 
       - name: Validate pipeline completeness
