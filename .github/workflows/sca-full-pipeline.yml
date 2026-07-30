@@ -565,10 +565,11 @@ jobs:
             exit 0
           fi
 
-          python3 -c "
-import json, os
+          # Write the per-dependency split script to a file to avoid YAML quoting issues
+          cat > /tmp/split-spdx.py << 'PYEOF'
+import json, os, sys
 
-report_dir = '${{ env.REPORT_DIR }}'
+report_dir = sys.argv[1]
 
 with open('results/sbom_spdx.json') as f:
     spdx = json.load(f)
@@ -583,7 +584,7 @@ for comp in sbom.get('components', []):
     name = comp.get('name', '')
     ver = comp.get('version', '')
     if ref:
-        pkg_to_ref[f'{name}@{ver}'] = ref
+        pkg_to_ref[name + '@' + ver] = ref
 
 # Split SPDX packages into per-dependency files
 packages = spdx.get('packages', [])
@@ -591,27 +592,29 @@ count = 0
 for pkg in packages:
     pkg_name = pkg.get('name', 'unknown')
     pkg_ver = pkg.get('versionInfo', '')
-    key = f'{pkg_name}@{pkg_ver}' if pkg_ver else pkg_name
+    key = pkg_name + '@' + pkg_ver if pkg_ver else pkg_name
 
     # Create a minimal SPDX for this package
     per_pkg = {
         'spdxVersion': spdx.get('spdxVersion', 'SPDX-2.3'),
         'dataLicense': spdx.get('dataLicense', 'CC0-1.0'),
         'SPDXID': 'SPDXRef-DOCUMENT',
-        'name': f'{pkg_name}-{pkg_ver}' if pkg_ver else pkg_name,
+        'name': pkg_name + '-' + pkg_ver if pkg_ver else pkg_name,
         'creationInfo': spdx.get('creationInfo', {}),
         'packages': [pkg],
         'relationships': []
     }
 
     safe_name = key.replace('/', '_').replace(':', '_').replace('@', '_')
-    out_file = os.path.join(report_dir, f'{safe_name}.spdx.json')
+    out_file = os.path.join(report_dir, safe_name + '.spdx.json')
     with open(out_file, 'w') as f:
         json.dump(per_pkg, f, indent=2)
     count += 1
 
-print(f'Generated {count} per-dependency SPDX reports in {report_dir}/')
-"
+print('Generated ' + str(count) + ' per-dependency SPDX reports in ' + report_dir + '/')
+PYEOF
+
+          python3 /tmp/split-spdx.py "${{ env.REPORT_DIR }}"
 
       - name: Verify FOSSology output
         run: |
