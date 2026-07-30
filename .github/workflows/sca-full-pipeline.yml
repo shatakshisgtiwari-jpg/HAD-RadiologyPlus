@@ -613,10 +613,15 @@ jobs:
 
       - name: Restore files to working directory
         run: |
-          cp "scan-output/sourced-sbom.json" "sourced-sbom.json"
-          [ -d "scan-output/results" ] && cp -r "scan-output/results" .
-          [ -d "scan-output/${{ env.REPORT_DIR }}" ] && cp -r "scan-output/${{ env.REPORT_DIR }}" .
-          [ -d "scan-output/sources" ] && cp -r "scan-output/sources" .
+          if [ -f "scan-output/sourced-sbom.json" ]; then
+            cp "scan-output/sourced-sbom.json" "sourced-sbom.json"
+            echo "Restored sourced-sbom.json"
+          else
+            echo "WARNING: sourced-sbom.json not found in scan-output"
+          fi
+          [ -d "scan-output/results" ] && cp -r "scan-output/results" . && echo "Restored results"
+          [ -d "scan-output/${{ env.REPORT_DIR }}" ] && cp -r "scan-output/${{ env.REPORT_DIR }}" . && echo "Restored ${{ env.REPORT_DIR }}"
+          [ -d "scan-output/sources" ] && cp -r "scan-output/sources" . && echo "Restored sources"
 
       - name: Attach source files to SW360 releases
         run: |
