@@ -614,8 +614,6 @@ print(f'Generated {count} per-dependency SPDX reports in {report_dir}/')
 "
 
       - name: Verify FOSSology output
-
-      - name: Verify FOSSology output
         run: |
           if [ ! -f "results/sbom_spdx.json" ]; then
             echo "ERROR: results/sbom_spdx.json not found"
