@@ -565,56 +565,10 @@ jobs:
             exit 0
           fi
 
-          # Write the per-dependency split script to a file to avoid YAML quoting issues
-          cat > /tmp/split-spdx.py << 'PYEOF'
-import json, os, sys
-
-report_dir = sys.argv[1]
-
-with open('results/sbom_spdx.json') as f:
-    spdx = json.load(f)
-
-with open('filtered-sbom.json') as f:
-    sbom = json.load(f)
-
-# Build lookup: package name -> bom-ref from SBOM
-pkg_to_ref = {}
-for comp in sbom.get('components', []):
-    ref = comp.get('bom-ref', '')
-    name = comp.get('name', '')
-    ver = comp.get('version', '')
-    if ref:
-        pkg_to_ref[name + '@' + ver] = ref
-
-# Split SPDX packages into per-dependency files
-packages = spdx.get('packages', [])
-count = 0
-for pkg in packages:
-    pkg_name = pkg.get('name', 'unknown')
-    pkg_ver = pkg.get('versionInfo', '')
-    key = pkg_name + '@' + pkg_ver if pkg_ver else pkg_name
-
-    # Create a minimal SPDX for this package
-    per_pkg = {
-        'spdxVersion': spdx.get('spdxVersion', 'SPDX-2.3'),
-        'dataLicense': spdx.get('dataLicense', 'CC0-1.0'),
-        'SPDXID': 'SPDXRef-DOCUMENT',
-        'name': pkg_name + '-' + pkg_ver if pkg_ver else pkg_name,
-        'creationInfo': spdx.get('creationInfo', {}),
-        'packages': [pkg],
-        'relationships': []
-    }
-
-    safe_name = key.replace('/', '_').replace(':', '_').replace('@', '_')
-    out_file = os.path.join(report_dir, safe_name + '.spdx.json')
-    with open(out_file, 'w') as f:
-        json.dump(per_pkg, f, indent=2)
-    count += 1
-
-print('Generated ' + str(count) + ' per-dependency SPDX reports in ' + report_dir + '/')
-PYEOF
-
-          python3 /tmp/split-spdx.py "${{ env.REPORT_DIR }}"
+          # Use base64 to avoid heredoc delimiter issues in YAML block scalars
+          echo 'aW1wb3J0IGpzb24sIG9zLCBzeXMKCnJkID0gc3lzLmFyZ3ZbMV0Kd2l0aCBvcGVuKCdyZXN1bHRzL3Nib21fc3BkeC5qc29uJykgYXMgZjoKICAgIHNwZHggPSBqc29uLmxvYWQoZikKCnBhY2thZ2VzID0gc3BkeC5nZXQoJ3BhY2thZ2VzJywgW10pCmNvdW50ID0gMApmb3IgcGtnIGluIHBhY2thZ2VzOgogICAgcGtnX25hbWUgPSBwa2cuZ2V0KCduYW1lJywgJ3Vua25vd24nKQogICAgcGtnX3ZlciA9IHBrZy5nZXQoJ3ZlcnNpb25JbmZvJywgJycpCiAgICBrZXkgPSAocGtnX25hbWUgKyAnQCcgKyBwa2dfdmVyKSBpZiBwa2dfdmVyIGVsc2UgcGtnX25hbWUKICAgIHBlcl9wa2cgPSB7CiAgICAgICAgJ3NwZHhWZXJzaW9uJzogc3BkeC5nZXQoJ3NwZHhWZXJzaW9uJywgJ1NQRFgtMi4zJyksCiAgICAgICAgJ2RhdGFMaWNlbnNlJzogc3BkeC5nZXQoJ2RhdGFMaWNlbnNlJywgJ0NDMC0xLjAnKSwKICAgICAgICAnU1BEWElEJzogJ1NQRFhSZWYtRE9DVU1FTlQnLAogICAgICAgICduYW1lJzogKHBrZ19uYW1lICsgJy0nICsgcGtnX3ZlcikgaWYgcGtnX3ZlciBlbHNlIHBrZ19uYW1lLAogICAgICAgICdjcmVhdGlvbkluZm8nOiBzcGR4LmdldCgnY3JlYXRpb25JbmZvJywge30pLAogICAgICAgICdwYWNrYWdlcyc6IFtwa2ddLAogICAgICAgICdyZWxhdGlvbnNoaXBzJzogW10KICAgIH0KICAgIHNhZmVfbmFtZSA9IGtleS5yZXBsYWNlKCcvJywgJ18nKS5yZXBsYWNlKCc6JywgJ18nKS5yZXBsYWNlKCdAJywgJ18nKQogICAgd2l0aCBvcGVuKG9zLnBhdGguam9pbihyZCwgc2FmZV9uYW1lICsgJy5zcGR4Lmpzb24nKSwgJ3cnKSBhcyBmOgogICAgICAgIGpzb24uZHVtcChwZXJfcGtnLCBmLCBpbmRlbnQ9MikKICAgIGNvdW50ICs9IDEKcHJpbnQoJ0dlbmVyYXRlZCAnICsgc3RyKGNvdW50KSArICcgcGVyLWRlcGVuZGVuY3kgU1BEWCByZXBvcnRzJykK' | base64 -d > /tmp/split_spdx.py
+          python /tmp/split_spdx.py "${{ env.REPORT_DIR }}"
+          rm -f /tmp/split_spdx.py
 
       - name: Verify FOSSology output
         run: |
