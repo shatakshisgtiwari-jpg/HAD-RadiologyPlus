@@ -329,9 +329,13 @@ jobs:
           total=$(jq '.components | length' "$sbom_path")
           echo "=== Filtering $total components by clearing state ==="
 
-          included="[]"
-          skipped="[]"
-          errors="[]"
+          # Use temp files instead of shell variables to avoid "Argument list too long"
+          included_file=$(mktemp)
+          skipped_file=$(mktemp)
+          errors_file=$(mktemp)
+          echo '[]' > "$included_file"
+          echo '[]' > "$skipped_file"
+          echo '[]' > "$errors_file"
 
           comp_count=$(jq '.components | length' "$sbom_path")
 
@@ -342,7 +346,7 @@ jobs:
             sw360_id=$(echo "$comp" | jq -r '.properties[]? | select(.name == "siemens:sw360Id") | .value' 2>/dev/null)
 
             if [ -z "$sw360_id" ] || [ "$sw360_id" = "null" ]; then
-              included=$(echo "$included" | jq ". + [$comp]")
+              jq ". + [$comp]" "$included_file" > "${included_file}.tmp" && mv "${included_file}.tmp" "$included_file"
               echo "  [INCLUDE] $name@$version (no SW360 ID)"
               continue
             fi
@@ -351,8 +355,8 @@ jobs:
             response=$(curl -s -H "Authorization: Token $token" "$release_url" 2>/dev/null) || true
 
             if [ -z "$response" ]; then
-              included=$(echo "$included" | jq ". + [$comp]")
-              errors=$(echo "$errors" | jq ". + [$comp]")
+              jq ". + [$comp]" "$included_file" > "${included_file}.tmp" && mv "${included_file}.tmp" "$included_file"
+              jq ". + [$comp]" "$errors_file" > "${errors_file}.tmp" && mv "${errors_file}.tmp" "$errors_file"
               echo "  [INCLUDE] $name@$version - query error"
               continue
             fi
@@ -360,27 +364,29 @@ jobs:
             clearing_state=$(echo "$response" | jq -r '.clearingState // empty')
 
             if [ -z "$clearing_state" ]; then
-              included=$(echo "$included" | jq ". + [$comp]")
+              jq ". + [$comp]" "$included_file" > "${included_file}.tmp" && mv "${included_file}.tmp" "$included_file"
               echo "  [INCLUDE] $name@$version (no clearing state)"
             elif [ "$clearing_state" = "REPORT_AVAILABLE" ] || [ "$clearing_state" = "APPROVED" ]; then
-              skipped=$(echo "$skipped" | jq ". + [$comp]")
+              jq ". + [$comp]" "$skipped_file" > "${skipped_file}.tmp" && mv "${skipped_file}.tmp" "$skipped_file"
               echo "  [SKIP]    $name@$version - clearingState=$clearing_state"
             else
-              included=$(echo "$included" | jq ". + [$comp]")
+              jq ". + [$comp]" "$included_file" > "${included_file}.tmp" && mv "${included_file}.tmp" "$included_file"
               echo "  [INCLUDE] $name@$version - clearingState=$clearing_state"
             fi
           done
 
-          jq --argjson included "$included" '.components = $included' "$sbom_path" > "$out_path.tmp"
+          # Build filtered SBOM using temp file instead of --argjson
+          jq --slurpfile included "$included_file" '.components = $included[0]' "$sbom_path" > "$out_path.tmp"
 
-          included_refs=$(echo "$included" | jq '[.[]."bom-ref"]')
+          # Filter dependencies using temp file
+          jq '[.[]."bom-ref"]' "$included_file" > "${included_file}.refs"
 
-          jq --argjson included_refs "$included_refs" '
+          jq --slurpfile included_refs "${included_file}.refs" '
             if .dependencies then
               .dependencies = [
-                .dependencies[] | select(.ref as $r | $included_refs | index($r) != null) |
+                .dependencies[] | select(.ref as $r | $included_refs[0] | index($r) != null) |
                 if .dependsOn then
-                  .dependsOn = [.dependsOn[] | select(. as $c | $included_refs | index($c) != null)]
+                  .dependsOn = [.dependsOn[] | select(. as $c | $included_refs[0] | index($c) != null)]
                 else . end |
                 select((.dependsOn | length) > 0 or (.dependsOn == null))
               ]
@@ -388,9 +394,11 @@ jobs:
           ' "$out_path.tmp" > "$out_path"
           rm -f "$out_path.tmp"
 
-          included_count=$(echo "$included" | jq 'length')
-          skipped_count=$(echo "$skipped" | jq 'length')
-          errors_count=$(echo "$errors" | jq 'length')
+          included_count=$(jq 'length' "$included_file")
+          skipped_count=$(jq 'length' "$skipped_file")
+          errors_count=$(jq 'length' "$errors_file")
+
+          rm -f "$included_file" "$skipped_file" "$errors_file" "${included_file}.refs"
 
           echo ""
           echo "=== Filtering Summary ==="
