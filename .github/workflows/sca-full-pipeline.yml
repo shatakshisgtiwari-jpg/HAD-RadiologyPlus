@@ -521,8 +521,11 @@ jobs:
 
           mkdir -p results
 
+          # Use full fossology image (not :scanner) because the scanner-only
+          # image lacks /usr/local/etc/fossology/fossology.conf which ojo/copyright need.
           docker run --rm \
             --user root \
+            --entrypoint ojo \
             -w /opt/repo \
             -v "$(pwd):/opt/repo" \
             -e "GITHUB_TOKEN=${{ github.token }}" \
@@ -531,8 +534,8 @@ jobs:
             -e "GITHUB_REPO_URL=${{ github.server_url }}/${{ github.repository }}" \
             -e "GITHUB_REPO_OWNER=${{ github.repository_owner }}" \
             -e "GITHUB_ACTIONS=true" \
-            fossology/fossology:scanner \
-            ojo copyright \
+            fossology/fossology \
+            copyright \
             scan-only-deps \
             --report SPDX_JSON \
             --sbom-path filtered-sbom.json 2>&1 | tee fossology-docker-debug.log
