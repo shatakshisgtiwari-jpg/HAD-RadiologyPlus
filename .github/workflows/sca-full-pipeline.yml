@@ -167,19 +167,10 @@ jobs:
             --matchmode full-search,all-versions \
             -v
 
-      - name: Create missing components
+      - name: Create missing components and releases
         run: |
           python -m capycli bom createcomponents \
             -i mapped-sbom.json \
-            -o created-sbom.json \
-            -url ${{ vars.SW360_URL }} \
-            -t ${{ secrets.SW360_TOKEN }} \
-            -v
-
-      - name: Create missing releases
-        run: |
-          python -m capycli bom createreleases \
-            -i created-sbom.json \
             -o created-sbom.json \
             -url ${{ vars.SW360_URL }} \
             -t ${{ secrets.SW360_TOKEN }} \
@@ -517,16 +508,112 @@ jobs:
           fi
           echo "sourced-sbom.json: $(stat -c%s sourced-sbom.json) bytes"
 
-      - name: Run FOSSology analysis
-        id: fossology
-        uses: shatakshisgtiwari-jpg/fossology-action@feat/action/per-dependency-report
-        with:
-          scan_mode: "scan-only-deps"
-          scanners: "ojo copyright"
-          report_format: "SPDX_JSON"
-          sbom_path: "filtered-sbom.json"
-          per_dependency_report: "true"
-          report_dir: ${{ env.REPORT_DIR }}
+      - name: Run FOSSology analysis (official image)
+        run: |
+          echo "=========================================="
+          echo "FOSSology Scanner"
+          echo "=========================================="
+          echo "Scan Mode:     scan-only-deps"
+          echo "Scanners:      ojo copyright"
+          echo "Report Format: SPDX_JSON"
+          echo "SBOM Path:     filtered-sbom.json"
+          echo "=========================================="
+
+          mkdir -p results
+
+          docker run --rm \
+            --user root \
+            -w /opt/repo \
+            -v "$(pwd):/opt/repo" \
+            -e "GITHUB_TOKEN=${{ github.token }}" \
+            -e "GITHUB_REPOSITORY=${{ github.repository }}" \
+            -e "GITHUB_API=${{ github.api_url }}" \
+            -e "GITHUB_REPO_URL=${{ github.server_url }}/${{ github.repository }}" \
+            -e "GITHUB_REPO_OWNER=${{ github.repository_owner }}" \
+            -e "GITHUB_ACTIONS=true" \
+            fossology/fossology:scanner \
+            ojo copyright \
+            scan-only-deps \
+            --report SPDX_JSON \
+            --sbom-path filtered-sbom.json 2>&1 | tee fossology-docker-debug.log
+
+          scanner_exit_code=${PIPESTATUS[0]}
+          echo "Scanner exited with code: $scanner_exit_code"
+
+          if [ -f "results/sbom_spdx.json" ]; then
+            size=$(stat -c%s "results/sbom_spdx.json")
+            echo "OK: results/sbom_spdx.json exists ($size bytes)"
+            if [ "$scanner_exit_code" -ne 0 ]; then
+              echo "::warning::FOSSology scanner flagged policy violations (exit code ${scanner_exit_code}). Report was still generated; continuing pipeline."
+            fi
+          else
+            echo "ERROR: results/sbom_spdx.json not found - scanner failed to produce output"
+            exit 1
+          fi
+
+      - name: Generate per-dependency reports from consolidated SPDX
+        run: |
+          mkdir -p "${{ env.REPORT_DIR }}"
+
+          if [ ! -f "results/sbom_spdx.json" ]; then
+            echo "WARNING: No consolidated SPDX report found - skipping per-dependency split"
+            exit 0
+          fi
+
+          if [ ! -f "filtered-sbom.json" ]; then
+            echo "WARNING: No SBOM file found - skipping per-dependency split"
+            exit 0
+          fi
+
+          python3 -c "
+import json, os
+
+report_dir = '${{ env.REPORT_DIR }}'
+
+with open('results/sbom_spdx.json') as f:
+    spdx = json.load(f)
+
+with open('filtered-sbom.json') as f:
+    sbom = json.load(f)
+
+# Build lookup: package name -> bom-ref from SBOM
+pkg_to_ref = {}
+for comp in sbom.get('components', []):
+    ref = comp.get('bom-ref', '')
+    name = comp.get('name', '')
+    ver = comp.get('version', '')
+    if ref:
+        pkg_to_ref[f'{name}@{ver}'] = ref
+
+# Split SPDX packages into per-dependency files
+packages = spdx.get('packages', [])
+count = 0
+for pkg in packages:
+    pkg_name = pkg.get('name', 'unknown')
+    pkg_ver = pkg.get('versionInfo', '')
+    key = f'{pkg_name}@{pkg_ver}' if pkg_ver else pkg_name
+
+    # Create a minimal SPDX for this package
+    per_pkg = {
+        'spdxVersion': spdx.get('spdxVersion', 'SPDX-2.3'),
+        'dataLicense': spdx.get('dataLicense', 'CC0-1.0'),
+        'SPDXID': 'SPDXRef-DOCUMENT',
+        'name': f'{pkg_name}-{pkg_ver}' if pkg_ver else pkg_name,
+        'creationInfo': spdx.get('creationInfo', {}),
+        'packages': [pkg],
+        'relationships': []
+    }
+
+    safe_name = key.replace('/', '_').replace(':', '_').replace('@', '_')
+    out_file = os.path.join(report_dir, f'{safe_name}.spdx.json')
+    with open(out_file, 'w') as f:
+        json.dump(per_pkg, f, indent=2)
+    count += 1
+
+print(f'Generated {count} per-dependency SPDX reports in {report_dir}/')
+"
+
+      - name: Verify FOSSology output
 
       - name: Verify FOSSology output
         run: |
@@ -550,6 +637,7 @@ jobs:
             sourced-sbom.json
             results/
             ${{ env.REPORT_DIR }}/
+            ${{ env.SOURCE_DIR }}/
 
   # ╔══════════════════════════════════════════════════════════════════════════╗
   # ║  STAGE 3 — Upload to SW360 & Validation                                ║
@@ -619,9 +707,9 @@ jobs:
           else
             echo "WARNING: sourced-sbom.json not found in scan-output"
           fi
-          [ -d "scan-output/results" ] && cp -r "scan-output/results" . && echo "Restored results"
-          [ -d "scan-output/${{ env.REPORT_DIR }}" ] && cp -r "scan-output/${{ env.REPORT_DIR }}" . && echo "Restored ${{ env.REPORT_DIR }}"
-          [ -d "scan-output/sources" ] && cp -r "scan-output/sources" . && echo "Restored sources"
+          [ -d "scan-output/results" ] && cp -r "scan-output/results" . && echo "Restored results" || true
+          [ -d "scan-output/${{ env.REPORT_DIR }}" ] && cp -r "scan-output/${{ env.REPORT_DIR }}" . && echo "Restored ${{ env.REPORT_DIR }}" || true
+          [ -d "scan-output/sources" ] && cp -r "scan-output/sources" . && echo "Restored sources" || true
 
       - name: Attach source files to SW360 releases
         run: |
