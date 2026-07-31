@@ -521,6 +521,25 @@ jobs:
 
           mkdir -p results
 
+          # Pre-create pkg_downloads directory structure from SBOM components.
+          # The fossologyscanner Downloader only creates directories when it can
+          # actually download a package. If no download URLs are found (common for
+          # Maven packages in an SBOM), the directories are never created, but ojo's
+          # C++ boost::filesystem::directory_iterator crashes with SIGABRT (-6) when
+          # trying to iterate a non-existent path like pkg_downloads/maven/foo/1.0/.
+          echo "Creating placeholder package directories from SBOM..."
+          jq -r '
+            .components[]? |
+            [.purl, .name, .version] | @tsv
+          ' filtered-sbom.json 2>/dev/null | while IFS=$'\t' read -r purl name version; do
+            if [ -n "$purl" ] && [ -n "$name" ] && [ -n "$version" ]; then
+              type="${purl#pkg:}"
+              type="${type%%/*}"
+              mkdir -p "pkg_downloads/${type}/${name}/${version}"
+            fi
+          done
+          echo "Done creating package directories."
+
           # IMPORTANT: fossology/fossology:scanner's image ENTRYPOINT is ["bash", "-c"].
           # If we pass "/bin/fossologyscanner ojo copyright ..." as SEPARATE docker args,
           # bash -c only treats the FIRST token as the command to run (the rest become
