@@ -523,7 +523,7 @@ jobs:
           done
           echo "Done."
 
-      - name: Run FOSSology analysis (downloads sources + consolidated scan)
+      - name: Run FOSSology analysis (downloads sources + consolidated scan + per-dependency reports)
         uses: shatakshisgtiwari-jpg/fossology-action@feat/action/per-dependency-report
         with:
           scan_mode: "scan-only-deps"
@@ -532,61 +532,6 @@ jobs:
           sbom_path: "filtered-sbom.json"
           per_dependency_report: "true"
           report_dir: "per-dependency-reports"
-
-      - name: Generate per-dependency reports (Docker-based re-scan)
-        run: |
-          sbom_path="filtered-sbom.json"
-          report_dir="${{ env.REPORT_DIR }}"
-          scanner_image="ghcr.io/shatakshisgtiwari-jpg/fossology-scanner:latest"
-          mkdir -p "$report_dir"
-
-          echo "=== Re-scanning per-dependency reports with Docker ==="
-          scanned=0
-          skipped=0
-          total=$(jq '.components | length' "$sbom_path")
-
-          for i in $(seq 0 $((total - 1))); do
-            comp=$(jq -c ".components[$i]" "$sbom_path")
-            name=$(echo "$comp" | jq -r '.name')
-            version=$(echo "$comp" | jq -r '.version // ""')
-
-            # Per-dependency script downloads to sources/{name}@{version}/
-            src_dir="sources/${name}@${version}"
-
-            if [ ! -d "$src_dir" ] || [ -z "$(ls -A "$src_dir" 2>/dev/null)" ]; then
-              echo "  [$((i+1))/$total] $name@$version: No sources — skipping"
-              skipped=$((skipped + 1))
-              continue
-            fi
-
-            echo "  [$((i+1))/$total] $name@$version: Scanning..."
-            out_file="${report_dir}/${name}@${version}.spdx.json"
-
-            docker run --rm \
-              -w /opt/repo \
-              -v "$(pwd):/opt/repo" \
-              --entrypoint /bin/fossologyscanner \
-              "$scanner_image" \
-              scan-dir \
-              "${src_dir}" \
-              ojo copyright nomos \
-              --report SPDX_JSON \
-              --output "$out_file" 2>/dev/null
-
-            if [ -f "$out_file" ] && [ -s "$out_file" ]; then
-              echo "    OK: $(stat -c%s "$out_file") bytes"
-              scanned=$((scanned + 1))
-            else
-              echo "    WARN: scan produced no output"
-              skipped=$((skipped + 1))
-            fi
-          done
-
-          echo ""
-          echo "=== Per-dependency report summary ==="
-          echo "  Scanned:  $scanned"
-          echo "  Skipped:  $skipped"
-          echo "  Output:   $report_dir/"
 
       - name: Verify FOSSology output
         run: |
