@@ -533,7 +533,7 @@ jobs:
         uses: shatakshisgtiwari-jpg/fossology-action@feat/action/per-dependency-report
         with:
           scan_mode: "scan-only-deps"
-          scanners: "ojo copyright"
+          scanners: "ojo copyright nomos"
           report_format: "SPDX_JSON"
           sbom_path: "filtered-sbom.json"
           per_dependency_report: "true"
