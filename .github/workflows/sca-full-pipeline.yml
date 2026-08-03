@@ -508,20 +508,9 @@ jobs:
           fi
           echo "sourced-sbom.json: $(stat -c%s sourced-sbom.json) bytes"
 
-      - name: Run FOSSology analysis (official image)
+      - name: Pre-create package directories (workaround for ojo crash)
         run: |
-          echo "=========================================="
-          echo "FOSSology Scanner"
-          echo "=========================================="
-          echo "Scan Mode:     scan-only-deps"
-          echo "Scanners:      ojo copyright"
-          echo "Report Format: SPDX_JSON"
-          echo "SBOM Path:     filtered-sbom.json"
-          echo "=========================================="
-
           mkdir -p results
-
-          # Pre-create pkg_downloads directory structure from SBOM components.
           # The fossologyscanner Downloader only creates directories when it can
           # actually download a package. If no download URLs are found (common for
           # Maven packages in an SBOM), the directories are never created, but ojo's
@@ -540,68 +529,15 @@ jobs:
           done
           echo "Done creating package directories."
 
-          # IMPORTANT: fossology/fossology:scanner's image ENTRYPOINT is ["bash", "-c"].
-          # If we pass "/bin/fossologyscanner ojo copyright ..." as SEPARATE docker args,
-          # bash -c only treats the FIRST token as the command to run (the rest become
-          # $0, $1, ... and are silently ignored) - this is why the raw "ojo" binary was
-          # being executed directly (bypassing the wrapper's config setup) and failing
-          # with "unable to open configuration file fossology.conf".
-          #
-          # Fix: override --entrypoint to call /bin/fossologyscanner (a Python script,
-          # see fossology/fossology utils/automation/fossologyscanner.py) directly, so
-          # normal argv parsing applies.
-          docker run --rm \
-            --user root \
-            --entrypoint /bin/fossologyscanner \
-            -w /opt/repo \
-            -v "$(pwd):/opt/repo" \
-            -e "GITHUB_TOKEN=${{ github.token }}" \
-            -e "GITHUB_REPOSITORY=${{ github.repository }}" \
-            -e "GITHUB_API=${{ github.api_url }}" \
-            -e "GITHUB_REPO_URL=${{ github.server_url }}/${{ github.repository }}" \
-            -e "GITHUB_REPO_OWNER=${{ github.repository_owner }}" \
-            -e "GITHUB_ACTIONS=true" \
-            fossology/fossology:scanner \
-            ojo copyright \
-            scan-only-deps \
-            --report SPDX_JSON \
-            --sbom-path filtered-sbom.json 2>&1 | tee fossology-docker-debug.log
-
-          scanner_exit_code=${PIPESTATUS[0]}
-          echo "Scanner exited with code: $scanner_exit_code"
-
-          if [ -f "results/sbom_spdx.json" ]; then
-            size=$(stat -c%s "results/sbom_spdx.json")
-            echo "OK: results/sbom_spdx.json exists ($size bytes)"
-            if [ "$scanner_exit_code" -ne 0 ]; then
-              echo "::warning::FOSSology scanner flagged policy violations (exit code ${scanner_exit_code}). Report was still generated; continuing pipeline."
-            fi
-          else
-            echo "ERROR: results/sbom_spdx.json not found - scanner failed to produce output"
-            exit 1
-          fi
-
-      - name: Generate per-dependency reports from consolidated SPDX
-        run: |
-          mkdir -p "${{ env.REPORT_DIR }}"
-
-          if [ ! -f "results/sbom_spdx.json" ]; then
-            echo "WARNING: No consolidated SPDX report found - skipping per-dependency split"
-            exit 0
-          fi
-
-          if [ ! -f "filtered-sbom.json" ]; then
-            echo "WARNING: No SBOM file found - skipping per-dependency split"
-            exit 0
-          fi
-
-          # Use base64 to avoid heredoc delimiter issues in YAML block scalars
-          # IMPORTANT: filenames must use {name}@{version}.spdx.json format
-          # (with @ preserved) so CapyCLI's find_report_file() can match them
-          # via its exact-match or name-only-match logic.
-          echo 'aW1wb3J0IGpzb24sIG9zLCBzeXMKCnJkID0gc3lzLmFyZ3ZbMV0Kd2l0aCBvcGVuKCdyZXN1bHRzL3Nib21fc3BkeC5qc29uJykgYXMgZjoKICAgIHNwZHggPSBqc29uLmxvYWQoZikKCnBhY2thZ2VzID0gc3BkeC5nZXQoJ3BhY2thZ2VzJywgW10pCmNvdW50ID0gMApmb3IgcGtnIGluIHBhY2thZ2VzOgogICAgcGtnX25hbWUgPSBwa2cuZ2V0KCduYW1lJywgJ3Vua25vd24nKQogICAgcGtnX3ZlciA9IHBrZy5nZXQoJ3ZlcnNpb25JbmZvJywgJycpCiAgICBrZXkgPSAocGtnX25hbWUgKyAnQCcgKyBwa2dfdmVyKSBpZiBwa2dfdmVyIGVsc2UgcGtnX25hbWUKICAgIHBlcl9wa2cgPSB7CiAgICAgICAgJ3NwZHhWZXJzaW9uJzogc3BkeC5nZXQoJ3NwZHhWZXJzaW9uJywgJ1NQRFgtMi4zJyksCiAgICAgICAgJ2RhdGFMaWNlbnNlJzogc3BkeC5nZXQoJ2RhdGFMaWNlbnNlJywgJ0NDMC0xLjAnKSwKICAgICAgICAnU1BEWElEJzogJ1NQRFhSZWYtRE9DVU1FTlQnLAogICAgICAgICduYW1lJzogKHBrZ19uYW1lICsgJy0nICsgcGtnX3ZlcikgaWYgcGtnX3ZlciBlbHNlIHBrZ19uYW1lLAogICAgICAgICdjcmVhdGlvbkluZm8nOiBzcGR4LmdldCgnY3JlYXRpb25JbmZvJywge30pLAogICAgICAgICdwYWNrYWdlcyc6IFtwa2ddLAogICAgICAgICdyZWxhdGlvbnNoaXBzJzogW10KICAgIH0KICAgICMgS2VlcCBAIGluIGZpbGVuYW1lIHNvIENhcHlDTEkncyBmaW5kX3JlcG9ydF9maWxlIGNhbiBtYXRjaAogICAgIyB7bmFtZX1Ae3ZlcnNpb259LnNwZHguanNvbiBleGFjdGx5LiBPbmx5IHJlcGxhY2UgLyBhbmQgOiB3aGljaAogICAgIyBhcmUgaW52YWxpZCBpbiBmaWxlbmFtZXMgb24gbW9zdCBPUy4KICAgIHNhZmVfbmFtZSA9IGtleS5yZXBsYWNlKCcvJywgJ18nKS5yZXBsYWNlKCc6JywgJ18nKQogICAgd2l0aCBvcGVuKG9zLnBhdGguam9pbihyZCwgc2FmZV9uYW1lICsgJy5zcGR4Lmpzb24nKSwgJ3cnKSBhcyBmOgogICAgICAgIGpzb24uZHVtcChwZXJfcGtnLCBmLCBpbmRlbnQ9MikKICAgIGNvdW50ICs9IDEKcHJpbnQoJ0dlbmVyYXRlZCAnICsgc3RyKGNvdW50KSArICcgcGVyLWRlcGVuZGVuY3kgU1BEWCByZXBvcnRzJyk=' | base64 -d > /tmp/split_spdx.py
-          python /tmp/split_spdx.py "${{ env.REPORT_DIR }}"
-          rm -f /tmp/split_spdx.py
+      - name: Run FOSSology analysis
+        uses: shatakshisgtiwari-jpg/fossology-action@feat/action/per-dependency-report
+        with:
+          scan_mode: "scan-only-deps"
+          scanners: "ojo copyright"
+          report_format: "SPDX_JSON"
+          sbom_path: "filtered-sbom.json"
+          per_dependency_report: "true"
+          report_dir: "per-dependency-reports"
 
       - name: Verify FOSSology output
         run: |
@@ -654,6 +590,11 @@ jobs:
           name: scan-artifacts
           path: scan-output
 
+      - name: Download filtered SBOM (has all components with sw360Ids)
+        uses: actions/download-artifact@v4
+        with:
+          name: filtered-sbom
+
       - name: Checkout CapyCLI fork
         uses: actions/checkout@v4
         with:
@@ -701,8 +642,11 @@ jobs:
 
       - name: Attach source files to SW360 releases
         run: |
+          # Use filtered-sbom.json (has ALL components with sw360Ids) as input.
+          # sourced-sbom.json only has components with downloadable source URLs,
+          # which is a subset — using it would lose components.
           python -m capycli bom createreleases \
-            -i sourced-sbom.json \
+            -i filtered-sbom.json \
             -o final-sbom.json \
             -url ${{ vars.SW360_URL }} \
             -t ${{ secrets.SW360_TOKEN }} \
@@ -712,9 +656,9 @@ jobs:
       - name: Restore sw360Ids in final SBOM
         run: |
           echo "=== Restoring sw360Ids in final-sbom.json ==="
-          id_map=$(jq '[.components[] | {key: "\(.name)@\(.version)", id: (.properties[]? | select(.name == "siemens:sw360Id") | .value)}] | from_entries' "sourced-sbom.json")
+          id_map=$(jq '[.components[] | {key: "\(.name)@\(.version)", id: (.properties[]? | select(.name == "siemens:sw360Id") | .value)}] | from_entries' "filtered-sbom.json")
           id_count=$(echo "$id_map" | jq 'length')
-          echo "Found $id_count sw360Ids in sourced-sbom.json"
+          echo "Found $id_count sw360Ids in filtered-sbom.json"
 
           jq --argjson id_map "$id_map" '
             .components |= map(
@@ -904,20 +848,7 @@ jobs:
             --forceerror \
             -v
 
-      - name: Upload all final artifacts
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: all-sbom-artifacts
-          path: |
-            final-sbom.json
-
-      - name: Upload FOSSology reports
-        if: success() || failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fossology-reports
-          path: |
-            results/
-            ${{ env.REPORT_DIR }}/
-          if-no-files-found: warn
+      # Note: all-sbom-artifacts and fossology-reports are intentionally omitted.
+      # final-sbom.json is already uploaded by upload-to-sw360 job.
+      # results/ and per-dependency-reports/ are already in scan-artifacts.
+      # Uploading them again here would create redundant artifacts.
