@@ -466,39 +466,38 @@ jobs:
           touch ${{ env.CAPYCLI_DIR }}/.installed/marker
         working-directory: ${{ env.CAPYCLI_DIR }}
 
-      - name: Download dependency sources
+      - name: Fix Maven source URLs in SBOM
         run: |
           sbom_path="filtered-sbom.json"
-          source_dir="${{ env.SOURCE_DIR }}"
-          out_sbom="sourced-sbom.json"
+          echo "=== Fixing Maven sourceCodeDownloadUrl for Maven Central ==="
+          fixed=0
 
-          mkdir -p "$source_dir"
-
-          echo "=== Downloading sources ==="
-          python -m capycli bom downloadsources \
-            -i "$sbom_path" \
-            -source "$source_dir" \
-            -o "$out_sbom" \
-            -v
-
-          # Restore sw360Ids (capycli bom downloadsources drops custom properties)
-          echo "=== Restoring sw360Ids ==="
-          id_map=$(jq '[.components[] | {key: "\(.name)@\(.version)", value: (.properties[]? | select(.name == "siemens:sw360Id") | .value)}] | from_entries' "$sbom_path")
-          id_count=$(echo "$id_map" | jq 'length')
-          echo "Found $id_count sw360Ids in input SBOM"
-
-          jq --argjson id_map "$id_map" '
+          # Rewrite sourceCodeDownloadUrl for Maven components from VCS URLs to Maven Central source JARs
+          jq '
             .components |= map(
-              .key = "\(.name)@\(.version)" |
-              if $id_map[.key] and (.properties | any(.name == "siemens:sw360Id") | not) then
-                .properties += [{"name": "siemens:sw360Id", "value": $id_map[.key]}]
-              else . end |
-              del(.key)
+              if (.purl // "" | startswith("pkg:maven/")) and .group and .version then
+                .sourceCodeDownloadUrl = (
+                  "https://repo1.maven.org/maven2/" +
+                  (.group | gsub("\\."; "/")) +
+                  "/" + .name + "/" + .version + "/" +
+                  .name + "-" + .version + "-sources.jar"
+                )
+              else . end
             )
-          ' "$out_sbom" > "${out_sbom}.tmp" && mv "${out_sbom}.tmp" "$out_sbom"
+          ' "$sbom_path" > "${sbom_path}.tmp" && mv "${sbom_path}.tmp" "$sbom_path"
 
-          restored=$(jq '[.components[] | .properties[]? | select(.name == "siemens:sw360Id")] | length' "$out_sbom")
-          echo "sw360Ids restored: $restored components"
+          # Show what URLs were fixed
+          jq -r '
+            .components[]? |
+            select(.purl // "" | startswith("pkg:maven/")) |
+            "  \(.name)@\(.version): \(.sourceCodeDownloadUrl // "(none)")"
+          ' "$sbom_path"
+
+      - name: Create sourced-sbom.json
+        run: |
+          cp filtered-sbom.json sourced-sbom.json
+          with_ids=$(jq '[.components[] | select(.properties[]?.name == "siemens:sw360Id")] | length' sourced-sbom.json)
+          echo "sourced-sbom.json: $with_ids components with sw360Id"
 
       - name: Verify sourced SBOM
         run: |
@@ -510,13 +509,8 @@ jobs:
 
       - name: Pre-create package directories (workaround for ojo crash)
         run: |
-          mkdir -p results
-          # The fossologyscanner Downloader only creates directories when it can
-          # actually download a package. If no download URLs are found (common for
-          # Maven packages in an SBOM), the directories are never created, but ojo's
-          # C++ boost::filesystem::directory_iterator crashes with SIGABRT (-6) when
-          # trying to iterate a non-existent path like pkg_downloads/maven/foo/1.0/.
-          echo "Creating placeholder package directories from SBOM..."
+          mkdir -p pkg_downloads results
+          echo "Ensuring package directories exist..."
           jq -r '
             .components[]? |
             [.purl, .name, .version] | @tsv
@@ -527,9 +521,9 @@ jobs:
               mkdir -p "pkg_downloads/${type}/${name}/${version}"
             fi
           done
-          echo "Done creating package directories."
+          echo "Done."
 
-      - name: Run FOSSology analysis
+      - name: Run FOSSology analysis (downloads sources + consolidated scan)
         uses: shatakshisgtiwari-jpg/fossology-action@feat/action/per-dependency-report
         with:
           scan_mode: "scan-only-deps"
@@ -538,6 +532,61 @@ jobs:
           sbom_path: "filtered-sbom.json"
           per_dependency_report: "true"
           report_dir: "per-dependency-reports"
+
+      - name: Generate per-dependency reports (Docker-based re-scan)
+        run: |
+          sbom_path="filtered-sbom.json"
+          report_dir="${{ env.REPORT_DIR }}"
+          scanner_image="ghcr.io/shatakshisgtiwari-jpg/fossology-scanner:latest"
+          mkdir -p "$report_dir"
+
+          echo "=== Re-scanning per-dependency reports with Docker ==="
+          scanned=0
+          skipped=0
+          total=$(jq '.components | length' "$sbom_path")
+
+          for i in $(seq 0 $((total - 1))); do
+            comp=$(jq -c ".components[$i]" "$sbom_path")
+            name=$(echo "$comp" | jq -r '.name')
+            version=$(echo "$comp" | jq -r '.version // ""')
+
+            # Per-dependency script downloads to sources/{name}@{version}/
+            src_dir="sources/${name}@${version}"
+
+            if [ ! -d "$src_dir" ] || [ -z "$(ls -A "$src_dir" 2>/dev/null)" ]; then
+              echo "  [$((i+1))/$total] $name@$version: No sources — skipping"
+              skipped=$((skipped + 1))
+              continue
+            fi
+
+            echo "  [$((i+1))/$total] $name@$version: Scanning..."
+            out_file="${report_dir}/${name}@${version}.spdx.json"
+
+            docker run --rm \
+              -w /opt/repo \
+              -v "$(pwd):/opt/repo" \
+              --entrypoint /bin/fossologyscanner \
+              "$scanner_image" \
+              scan-dir \
+              "${src_dir}" \
+              ojo copyright nomos \
+              --report SPDX_JSON \
+              --output "$out_file" 2>/dev/null
+
+            if [ -f "$out_file" ] && [ -s "$out_file" ]; then
+              echo "    OK: $(stat -c%s "$out_file") bytes"
+              scanned=$((scanned + 1))
+            else
+              echo "    WARN: scan produced no output"
+              skipped=$((skipped + 1))
+            fi
+          done
+
+          echo ""
+          echo "=== Per-dependency report summary ==="
+          echo "  Scanned:  $scanned"
+          echo "  Skipped:  $skipped"
+          echo "  Output:   $report_dir/"
 
       - name: Verify FOSSology output
         run: |
