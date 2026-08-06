@@ -7,7 +7,6 @@ on:
       - 'Backend/**'
       - 'FrontEnd/package.json'
       - 'FrontEnd/package-lock.json'
-      - 'pom.xml'
       - 'allowlist.json'
       - '.github/workflows/sca-full-pipeline.yml'
   workflow_dispatch:
@@ -277,6 +276,25 @@ jobs:
         run: |
           echo "${{ steps.get-project-id.outputs.project_id }}" > project-id.txt
 
+      - name: Persist project ID to repo (avoid re-fetch every run)
+        run: |
+          mkdir -p .sw360
+          echo "${{ steps.get-project-id.outputs.project_id }}" > .sw360/project-id.txt
+          echo "Persisted project ID to .sw360/project-id.txt"
+
+      - name: Commit persisted project ID
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .sw360/project-id.txt
+          if git diff --cached --quiet; then
+            echo "No change to project ID - nothing to commit"
+          else
+            git commit -m "chore(sca): persist SW360 project ID for ${{ env.PROJECT_NAME }} ${{ env.PROJECT_VERSION }}"
+            git push
+          fi
+
       - name: Upload project ID
         if: success()
         uses: actions/upload-artifact@v4
@@ -310,93 +328,48 @@ jobs:
         with:
           name: created-sbom
 
+      - name: Checkout CapyCLI fork
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/capycli
+          ref: feat/sw360/upload_reports
+          path: ${{ env.CAPYCLI_DIR }}
+          clean: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Get capycli commit SHA
+        id: capycli-sha
+        run: |
+          cd ${{ env.CAPYCLI_DIR }}
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache capycli installation
+        id: cache-capycli
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CAPYCLI_DIR }}/.installed
+          key: capycli-${{ runner.os }}-py3.11-${{ steps.capycli-sha.outputs.sha }}
+
+      - name: Install CapyCLI
+        if: steps.cache-capycli.outputs.cache-hit != 'true'
+        run: |
+          pip install . --force-reinstall
+          mkdir -p ${{ env.CAPYCLI_DIR }}/.installed
+          touch ${{ env.CAPYCLI_DIR }}/.installed/marker
+        working-directory: ${{ env.CAPYCLI_DIR }}
+
       - name: Filter SBOM by clearing state
         run: |
-          sw360_url="${{ vars.SW360_URL }}"
-          token="${{ secrets.SW360_TOKEN }}"
-          sbom_path="created-sbom.json"
-          out_path="filtered-sbom.json"
-
-          total=$(jq '.components | length' "$sbom_path")
-          echo "=== Filtering $total components by clearing state ==="
-
-          # Use temp files instead of shell variables to avoid "Argument list too long"
-          included_file=$(mktemp)
-          skipped_file=$(mktemp)
-          errors_file=$(mktemp)
-          echo '[]' > "$included_file"
-          echo '[]' > "$skipped_file"
-          echo '[]' > "$errors_file"
-
-          comp_count=$(jq '.components | length' "$sbom_path")
-
-          for i in $(seq 0 $((comp_count - 1))); do
-            comp=$(jq ".components[$i]" "$sbom_path")
-            name=$(echo "$comp" | jq -r '.name')
-            version=$(echo "$comp" | jq -r '.version // "unknown"')
-            sw360_id=$(echo "$comp" | jq -r '.properties[]? | select(.name == "siemens:sw360Id") | .value' 2>/dev/null)
-
-            if [ -z "$sw360_id" ] || [ "$sw360_id" = "null" ]; then
-              jq ". + [$comp]" "$included_file" > "${included_file}.tmp" && mv "${included_file}.tmp" "$included_file"
-              echo "  [INCLUDE] $name@$version (no SW360 ID)"
-              continue
-            fi
-
-            release_url="$sw360_url/resource/api/releases/$sw360_id"
-            response=$(curl -s -H "Authorization: Token $token" "$release_url" 2>/dev/null) || true
-
-            if [ -z "$response" ]; then
-              jq ". + [$comp]" "$included_file" > "${included_file}.tmp" && mv "${included_file}.tmp" "$included_file"
-              jq ". + [$comp]" "$errors_file" > "${errors_file}.tmp" && mv "${errors_file}.tmp" "$errors_file"
-              echo "  [INCLUDE] $name@$version - query error"
-              continue
-            fi
-
-            clearing_state=$(echo "$response" | jq -r '.clearingState // empty')
-
-            if [ -z "$clearing_state" ]; then
-              jq ". + [$comp]" "$included_file" > "${included_file}.tmp" && mv "${included_file}.tmp" "$included_file"
-              echo "  [INCLUDE] $name@$version (no clearing state)"
-            elif [ "$clearing_state" = "REPORT_AVAILABLE" ] || [ "$clearing_state" = "APPROVED" ]; then
-              jq ". + [$comp]" "$skipped_file" > "${skipped_file}.tmp" && mv "${skipped_file}.tmp" "$skipped_file"
-              echo "  [SKIP]    $name@$version - clearingState=$clearing_state"
-            else
-              jq ". + [$comp]" "$included_file" > "${included_file}.tmp" && mv "${included_file}.tmp" "$included_file"
-              echo "  [INCLUDE] $name@$version - clearingState=$clearing_state"
-            fi
-          done
-
-          # Build filtered SBOM using temp file instead of --argjson
-          jq --slurpfile included "$included_file" '.components = $included[0]' "$sbom_path" > "$out_path.tmp"
-
-          # Filter dependencies using temp file
-          jq '[.[]."bom-ref"]' "$included_file" > "${included_file}.refs"
-
-          jq --slurpfile included_refs "${included_file}.refs" '
-            if .dependencies then
-              .dependencies = [
-                .dependencies[] | select(.ref as $r | $included_refs[0] | index($r) != null) |
-                if .dependsOn then
-                  .dependsOn = [.dependsOn[] | select(. as $c | $included_refs[0] | index($c) != null)]
-                else . end |
-                select((.dependsOn | length) > 0 or (.dependsOn == null))
-              ]
-            else . end
-          ' "$out_path.tmp" > "$out_path"
-          rm -f "$out_path.tmp"
-
-          included_count=$(jq 'length' "$included_file")
-          skipped_count=$(jq 'length' "$skipped_file")
-          errors_count=$(jq 'length' "$errors_file")
-
-          rm -f "$included_file" "$skipped_file" "$errors_file" "${included_file}.refs"
-
-          echo ""
-          echo "=== Filtering Summary ==="
-          echo "Total components:     $total"
-          echo "Included (need scan): $included_count"
-          echo "Skipped (already cleared): $skipped_count"
-          echo "Query errors:         $errors_count"
+          python -m capycli bom filter \
+            --clearing-state "REPORT_AVAILABLE,APPROVED" \
+            -i created-sbom.json \
+            -o filtered-sbom.json \
+            -url ${{ vars.SW360_URL }} \
+            -t ${{ secrets.SW360_TOKEN }} \
+            -v
 
       - name: Verify filtered SBOM
         run: |
@@ -507,7 +480,7 @@ jobs:
           fi
           echo "sourced-sbom.json: $(stat -c%s sourced-sbom.json) bytes"
 
-      - name: Pre-create package directories (workaround for ojo crash)
+      - name: Pre-create package directories 
         run: |
           mkdir -p pkg_downloads results
           echo "Ensuring package directories exist..."
@@ -720,10 +693,19 @@ jobs:
             echo "WARNING: No per-dependency reports found - skipping"
           fi
 
-      - name: Upload consolidated scan report to SW360
+      - name: Upload consolidated scan report to SW360 (fallback only)
         run: |
-          if [ -f "results/sbom_spdx.json" ]; then
-            echo "Uploading consolidated report..."
+          # The consolidated report is only uploaded as a fallback when there
+          # are no per-dependency reports. If per-dependency reports exist,
+          # they are the authoritative per-release scan data and the
+          # consolidated report would be redundant.
+          report_files=$(find ${{ env.REPORT_DIR }} -name "*.spdx.json" -type f 2>/dev/null)
+          report_count=$(echo "$report_files" | wc -l)
+
+          if [ "$report_count" -gt 0 ]; then
+            echo "Per-dependency reports present ($report_count) - skipping consolidated upload"
+          elif [ -f "results/sbom_spdx.json" ]; then
+            echo "No per-dependency reports - uploading consolidated report as fallback..."
             max_retries=3
             retry_delay=30
             last_exit=0
