@@ -261,39 +261,35 @@ jobs:
             -source had-radiologyplus-project-info.json \
             -v
 
-      - name: Capture SW360 project ID
+      - name: Cache SW360 project ID
+        id: cache-project-id
+        uses: actions/cache@v4
+        with:
+          path: .sw360/project-id.txt
+          key: sw360-project-id-${{ env.PROJECT_NAME }}-${{ env.PROJECT_VERSION }}
+
+      - name: Capture SW360 project ID (use cache if available)
         id: get-project-id
         run: |
-          projectId=$(python -m capycli project find \
-            -name "${{ env.PROJECT_NAME }}" \
-            -version "${{ env.PROJECT_VERSION }}" \
-            -url ${{ vars.SW360_URL }} \
-            -t ${{ secrets.SW360_TOKEN }} \
-            --id-only)
+          if [ -f .sw360/project-id.txt ]; then
+            projectId=$(cat .sw360/project-id.txt | tr -d '[:space:]')
+            echo "Using cached project ID: $projectId"
+          else
+            projectId=$(python -m capycli project find \
+              -name "${{ env.PROJECT_NAME }}" \
+              -version "${{ env.PROJECT_VERSION }}" \
+              -url ${{ vars.SW360_URL }} \
+              -t ${{ secrets.SW360_TOKEN }} \
+              --id-only)
+            echo "Fetched project ID: $projectId"
+          fi
           echo "project_id=$projectId" >> "$GITHUB_OUTPUT"
 
       - name: Save project ID to file
         run: |
           echo "${{ steps.get-project-id.outputs.project_id }}" > project-id.txt
-
-      - name: Persist project ID to repo (avoid re-fetch every run)
-        run: |
           mkdir -p .sw360
           echo "${{ steps.get-project-id.outputs.project_id }}" > .sw360/project-id.txt
-          echo "Persisted project ID to .sw360/project-id.txt"
-
-      - name: Commit persisted project ID
-        if: success()
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .sw360/project-id.txt
-          if git diff --cached --quiet; then
-            echo "No change to project ID - nothing to commit"
-          else
-            git commit -m "chore(sca): persist SW360 project ID for ${{ env.PROJECT_NAME }} ${{ env.PROJECT_VERSION }}"
-            git push
-          fi
 
       - name: Upload project ID
         if: success()
