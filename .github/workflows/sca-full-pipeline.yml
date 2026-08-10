@@ -25,8 +25,8 @@ env:
 jobs:
   # ╔══════════════════════════════════════════════════════════════════════════╗
   # ║  STAGE 1 — SBOM Generation & SW360 sync                                  ║
-  # ║  Generates SBOM, maps to SW360, creates missing components/releases,   ║
-  # ║  and creates/updates the SW360 project.                                ║
+  # ║  Generates SBOM, maps to SW360, creates missing components/releases,     ║
+  # ║  and creates/updates the SW360 project.                                  ║
   # ╚══════════════════════════════════════════════════════════════════════════╝
 
   # ────────────────────────────────────────────────────────────────────────────
