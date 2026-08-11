@@ -26,44 +26,44 @@ jobs:
   # ────────────────────────────────────────────────────────────────────────────
   # Job 0: Delete stale artifacts to free Actions storage quota
   # ────────────────────────────────────────────────────────────────────────────
-  cleanup-artifacts:
-    name: " Cleanup old artifacts"
-    runs-on: [self-hosted, linux]
-    steps:
-      - name: Delete artifacts older than 1 day
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          repo="${{ github.repository }}"
-          cutoff=$(date -d '1 day ago' +%s)
-          page=1
-          deleted=0
-          while :; do
-            artifacts=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/$repo/actions/artifacts?per_page=100&page=$page")
-            count=$(echo "$artifacts" | jq '.artifacts | length')
-            if [ "$count" -eq 0 ]; then
-              break
-            fi
-            for id in $(echo "$artifacts" | jq -r '.artifacts[].id'); do
-              created=$(echo "$artifacts" | jq -r --arg id "$id" '.artifacts[] | select(.id == ($id|tonumber)) | .created_at')
-              created_ts=$(date -d "$created" +%s)
-              if [ "$created_ts" -lt "$cutoff" ]; then
-                echo "Deleting artifact $id (created $created)"
-                curl -s -X DELETE -H "Authorization: Bearer $GH_TOKEN" \
-                  -H "Accept: application/vnd.github+json" \
-                  "https://api.github.com/repos/$repo/actions/artifacts/$id"
-                deleted=$((deleted + 1))
-              fi
-            done
-            total=$(echo "$artifacts" | jq '.total_count')
-            if [ $((page * 100)) -ge "$total" ]; then
-              break
-            fi
-            page=$((page + 1))
-          done
-          echo "Deleted $deleted stale artifact(s)"
+  # cleanup-artifacts:
+  #   name: " Cleanup old artifacts"
+  #   runs-on: [self-hosted, linux]
+  #   steps:
+  #     - name: Delete artifacts older than 1 day
+  #       env:
+  #         GH_TOKEN: ${{ github.token }}
+  #       run: |
+  #         repo="${{ github.repository }}"
+  #         cutoff=$(date -d '1 day ago' +%s)
+  #         page=1
+  #         deleted=0
+  #         while :; do
+  #           artifacts=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+  #             -H "Accept: application/vnd.github+json" \
+  #             "https://api.github.com/repos/$repo/actions/artifacts?per_page=100&page=$page")
+  #           count=$(echo "$artifacts" | jq '.artifacts | length')
+  #           if [ "$count" -eq 0 ]; then
+  #             break
+  #           fi
+  #           for id in $(echo "$artifacts" | jq -r '.artifacts[].id'); do
+  #             created=$(echo "$artifacts" | jq -r --arg id "$id" '.artifacts[] | select(.id == ($id|tonumber)) | .created_at')
+  #             created_ts=$(date -d "$created" +%s)
+  #             if [ "$created_ts" -lt "$cutoff" ]; then
+  #               echo "Deleting artifact $id (created $created)"
+  #               curl -s -X DELETE -H "Authorization: Bearer $GH_TOKEN" \
+  #                 -H "Accept: application/vnd.github+json" \
+  #                 "https://api.github.com/repos/$repo/actions/artifacts/$id"
+  #               deleted=$((deleted + 1))
+  #             fi
+  #           done
+  #           total=$(echo "$artifacts" | jq '.total_count')
+  #           if [ $((page * 100)) -ge "$total" ]; then
+  #             break
+  #           fi
+  #           page=$((page + 1))
+  #         done
+  #         echo "Deleted $deleted stale artifact(s)"
 
   # ╔══════════════════════════════════════════════════════════════════════════╗
   # ║  STAGE 1 — SBOM Generation & SW360 sync                                  ║
@@ -201,6 +201,7 @@ jobs:
 
       - name: Map SBOM to SW360
         run: |
+          set +e
           python -m capycli bom map \
             -i sbom.json \
             -url ${{ vars.SW360_URL }} \
@@ -209,6 +210,15 @@ jobs:
             -o mapped-sbom.json \
             --matchmode full-search,all-versions \
             -v
+          rc=$?
+          set -e
+          # 80 = RESULT_NO_UNIQUE_MAPPING, 81 = RESULT_INCOMPLETE_MAPPING.
+          # Both are expected on first run before SW360 has the components;
+          # the createcomponents step below creates them. Fail on any other error.
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 80 ] && [ "$rc" -ne 81 ]; then
+            exit "$rc"
+          fi
+          echo "Incomplete mapping is acceptable on first run - continuing to create components/releases."
 
       - name: Create missing components and releases
         run: |
@@ -781,55 +791,6 @@ jobs:
             fi
           else
             echo "WARNING: No per-dependency reports found - skipping"
-          fi
-
-      - name: Upload consolidated scan report to SW360 (fallback only)
-        run: |
-          # The consolidated report is only uploaded as a fallback when there
-          # are no per-dependency reports. If per-dependency reports exist,
-          # they are the authoritative per-release scan data and the
-          # consolidated report would be redundant.
-          report_files=$(find ${{ env.REPORT_DIR }} -name "*.spdx.json" -type f 2>/dev/null)
-          report_count=$(echo "$report_files" | wc -l)
-
-          if [ "$report_count" -gt 0 ]; then
-            echo "Per-dependency reports present ($report_count) - skipping consolidated upload"
-          elif [ -f "results/sbom_spdx.json" ]; then
-            echo "No per-dependency reports - uploading consolidated report as fallback..."
-            max_retries=3
-            retry_delay=30
-            last_exit=0
-
-            for attempt in $(seq 1 $max_retries); do
-              echo "=== Consolidated upload attempt $attempt of $max_retries ==="
-              python -m capycli bom uploadreports \
-                -i final-sbom.json \
-                --report-file results/sbom_spdx.json \
-                --filetype COMPONENT_LICENSE_INFO_XML \
-                --comment "Consolidated Fossology SPDX scan - ${{ env.PROJECT_NAME }} ${{ env.PROJECT_VERSION }}" \
-                -url ${{ vars.SW360_URL }} \
-                -t ${{ secrets.SW360_TOKEN }} \
-                -o final-sbom.json \
-                -v
-              last_exit=$?
-
-              if [ "$last_exit" -eq 0 ]; then
-                echo "Consolidated upload completed on attempt $attempt"
-                break
-              else
-                echo "Consolidated upload failed (exit code $last_exit) on attempt $attempt"
-                if [ "$attempt" -lt "$max_retries" ]; then
-                  echo "Retrying in $retry_delay seconds..."
-                  sleep "$retry_delay"
-                fi
-              fi
-            done
-
-            if [ "$last_exit" -ne 0 ]; then
-              echo "::warning::Consolidated upload failed after $max_retries attempts"
-            fi
-          else
-            echo "WARNING: Consolidated report not found - skipping"
           fi
 
       - name: Upload final SBOM
