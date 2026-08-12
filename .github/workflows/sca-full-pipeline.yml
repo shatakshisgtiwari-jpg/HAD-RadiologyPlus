@@ -552,7 +552,7 @@ jobs:
           done
           echo "Done."
 
-      - name: Run FOSSology analysis (downloads sources + consolidated scan + per-dependency reports)
+      - name: Run FOSSology analysis 
         uses: shatakshisgtiwari-jpg/fossology-action@feat/action/per-dependency-report
         with:
           scan_mode: "scan-only-deps"
