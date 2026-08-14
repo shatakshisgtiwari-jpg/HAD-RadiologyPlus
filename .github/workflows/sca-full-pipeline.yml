@@ -343,7 +343,7 @@ jobs:
           sw360_url="${{ vars.SW360_URL }}"
           token="${{ secrets.SW360_TOKEN }}"
           sbom_path="created-sbom.json"
-          out_path="filtered-sbom.json"
+          out_path="$sbom_path"
 
           total=$(jq '.components | length' "$sbom_path")
           echo "=== Filtering $total components by clearing state ==="
@@ -356,6 +356,14 @@ jobs:
           echo '[]' > "$skipped_file"
           echo '[]' > "$errors_file"
 
+          add_clearing_state() {
+            jq --arg state "$2" '
+              .properties = ((.properties // [])
+                | map(select(.name != "siemens:clearingState"))
+                + [{"name": "siemens:clearingState", "value": $state}])
+            ' <<< "$1"
+          }
+
           comp_count=$(jq '.components | length' "$sbom_path")
 
           for i in $(seq 0 $((comp_count - 1))); do
@@ -365,6 +373,7 @@ jobs:
             sw360_id=$(echo "$comp" | jq -r '.properties[]? | select(.name == "siemens:sw360Id") | .value' 2>/dev/null)
 
             if [ -z "$sw360_id" ] || [ "$sw360_id" = "null" ]; then
+              comp=$(add_clearing_state "$comp" "NO_SW360_ID")
               jq ". + [$comp]" "$included_file" > "${included_file}.tmp" && mv "${included_file}.tmp" "$included_file"
               echo "  [INCLUDE] $name@$version (no SW360 ID)"
               continue
@@ -374,6 +383,7 @@ jobs:
             response=$(curl -s -H "Authorization: Token $token" "$release_url" 2>/dev/null) || true
 
             if [ -z "$response" ]; then
+              comp=$(add_clearing_state "$comp" "QUERY_ERROR")
               jq ". + [$comp]" "$included_file" > "${included_file}.tmp" && mv "${included_file}.tmp" "$included_file"
               jq ". + [$comp]" "$errors_file" > "${errors_file}.tmp" && mv "${errors_file}.tmp" "$errors_file"
               echo "  [INCLUDE] $name@$version - query error"
@@ -383,18 +393,21 @@ jobs:
             clearing_state=$(echo "$response" | jq -r '.clearingState // empty')
 
             if [ -z "$clearing_state" ]; then
+              comp=$(add_clearing_state "$comp" "UNKNOWN")
               jq ". + [$comp]" "$included_file" > "${included_file}.tmp" && mv "${included_file}.tmp" "$included_file"
               echo "  [INCLUDE] $name@$version (no clearing state)"
             elif [ "$clearing_state" = "REPORT_AVAILABLE" ] || [ "$clearing_state" = "APPROVED" ]; then
+              comp=$(add_clearing_state "$comp" "$clearing_state")
               jq ". + [$comp]" "$skipped_file" > "${skipped_file}.tmp" && mv "${skipped_file}.tmp" "$skipped_file"
               echo "  [SKIP]    $name@$version - clearingState=$clearing_state"
             else
+              comp=$(add_clearing_state "$comp" "$clearing_state")
               jq ". + [$comp]" "$included_file" > "${included_file}.tmp" && mv "${included_file}.tmp" "$included_file"
               echo "  [INCLUDE] $name@$version - clearingState=$clearing_state"
             fi
           done
 
-          # Build filtered SBOM using temp file instead of --argjson
+          # Keep one SBOM file shape: enrich components, then overwrite the input file.
           jq --slurpfile included "$included_file" '.components = $included[0]' "$sbom_path" > "$out_path.tmp"
 
           # Filter dependencies using temp file
@@ -410,7 +423,7 @@ jobs:
                 select((.dependsOn | length) > 0 or (.dependsOn == null))
               ]
             else . end
-          ' "$out_path.tmp" > "$out_path"
+          ' "$out_path.tmp" > "$sbom_path"
           rm -f "$out_path.tmp"
 
           included_count=$(jq 'length' "$included_file")
@@ -428,18 +441,19 @@ jobs:
 
       - name: Verify filtered SBOM
         run: |
-          if [ ! -f filtered-sbom.json ]; then
-            echo "ERROR: filtered-sbom.json not found"
+          if [ ! -f created-sbom.json ]; then
+            echo "ERROR: created-sbom.json not found"
             exit 1
           fi
-          comp_count=$(jq '.components | length' filtered-sbom.json)
-          echo "filtered-sbom.json: $comp_count components remaining"
+          comp_count=$(jq '.components | length' created-sbom.json)
+          state_count=$(jq '[.components[] | select(.properties[]?.name == "siemens:clearingState")] | length' created-sbom.json)
+          echo "created-sbom.json: $comp_count components remaining, $state_count with clearing state"
 
       - name: Upload filtered SBOM
         uses: actions/upload-artifact@v4
         with:
           name: filtered-sbom
-          path: filtered-sbom.json
+          path: created-sbom.json
           retention-days: 7
 
   # ────────────────────────────────────────────────────────────────────────────
@@ -497,7 +511,7 @@ jobs:
 
       - name: Fix Maven source URLs in SBOM
         run: |
-          sbom_path="filtered-sbom.json"
+          sbom_path="created-sbom.json"
           echo "=== Fixing Maven sourceCodeDownloadUrl for Maven Central ==="
           fixed=0
 
@@ -524,7 +538,7 @@ jobs:
 
       - name: Create sourced-sbom.json
         run: |
-          cp filtered-sbom.json sourced-sbom.json
+          cp created-sbom.json sourced-sbom.json
           with_ids=$(jq '[.components[] | select(.properties[]?.name == "siemens:sw360Id")] | length' sourced-sbom.json)
           echo "sourced-sbom.json: $with_ids components with sw360Id"
 
@@ -543,7 +557,7 @@ jobs:
           jq -r '
             .components[]? |
             [.purl, .name, .version] | @tsv
-          ' filtered-sbom.json 2>/dev/null | while IFS=$'\t' read -r purl name version; do
+          ' created-sbom.json 2>/dev/null | while IFS=$'\t' read -r purl name version; do
             if [ -n "$purl" ] && [ -n "$name" ] && [ -n "$version" ]; then
               type="${purl#pkg:}"
               type="${type%%/*}"
@@ -558,7 +572,7 @@ jobs:
           scan_mode: "scan-only-deps"
           scanners: "ojo copyright nomos"
           report_format: "SPDX_JSON"
-          sbom_path: "filtered-sbom.json"
+          sbom_path: "created-sbom.json"
           per_dependency_report: "true"
           report_dir: "per-dependency-reports"
 
@@ -666,11 +680,11 @@ jobs:
 
       - name: Attach source files to SW360 releases
         run: |
-          # Use filtered-sbom.json (has ALL components with sw360Ids) as input.
+          # Use created-sbom.json (has ALL components with sw360Ids) as input.
           # sourced-sbom.json only has components with downloadable source URLs,
           # which is a subset — using it would lose components.
           python -m capycli bom createreleases \
-            -i filtered-sbom.json \
+            -i created-sbom.json \
             -o final-sbom.json \
             -url ${{ vars.SW360_URL }} \
             -t ${{ secrets.SW360_TOKEN }} \
@@ -680,9 +694,9 @@ jobs:
       - name: Restore sw360Ids in final SBOM
         run: |
           echo "=== Restoring sw360Ids in final-sbom.json ==="
-          id_map=$(jq '[.components[] | {key: "\(.name)@\(.version)", value: (.properties[]? | select(.name == "siemens:sw360Id") | .value)}] | from_entries' "filtered-sbom.json")
+          id_map=$(jq '[.components[] | {key: "\(.name)@\(.version)", value: (.properties[]? | select(.name == "siemens:sw360Id") | .value)}] | from_entries' "created-sbom.json")
           id_count=$(echo "$id_map" | jq 'length')
-          echo "Found $id_count sw360Ids in filtered-sbom.json"
+          echo "Found $id_count sw360Ids in created-sbom.json"
 
           jq --argjson id_map "$id_map" '
             .components |= map(
