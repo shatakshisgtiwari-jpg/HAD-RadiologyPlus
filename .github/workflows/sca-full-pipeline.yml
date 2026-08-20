@@ -24,9 +24,9 @@ env:
 
 jobs:
   # ╔══════════════════════════════════════════════════════════════════════════╗
-  # ║  STAGE 1 — SBOM Generation & SW360 sync                                  ║
-  # ║  Generates SBOM, maps to SW360, creates missing components/releases,     ║
-  # ║  and creates/updates the SW360 project.                                  ║
+  # ║  STAGE 1 — SBOM Generation & SW360 bootstrap                              ║
+  # ║  Generates the SBOM, maps it to SW360, bootstraps missing components and  ║
+  # ║  prerequisite releases, and creates/updates the SW360 project.            ║
   # ╚══════════════════════════════════════════════════════════════════════════╝
 
   # ────────────────────────────────────────────────────────────────────────────
@@ -81,7 +81,7 @@ jobs:
           # Remove GitHub Actions components.
           # cdxgen includes actions/checkout, actions/setup-java, etc. as SBOM
           # components. These are CI pipeline tools, not project dependencies.
-          # They have no downloadable source archives, which breaks --download.
+          # They have no source archives, so they cannot enter the scan flow.
           # Filter by group="actions" or name matching "actions/*" pattern.
           jq '
             . as $root |
@@ -110,7 +110,7 @@ jobs:
           retention-days: 7
 
   # ────────────────────────────────────────────────────────────────────────────
-  # Job 1.2: Map SBOM to SW360 + Create missing components & releases
+  # Job 1.2: Map SBOM to SW360 + Bootstrap missing components & releases
   # ────────────────────────────────────────────────────────────────────────────
   map-and-create:
     name: " Map & create in SW360"
@@ -128,6 +128,35 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: sbom
+
+      - name: Normalize Maven source URLs
+        run: |
+          sbom_path="sbom.json"
+          echo "=== Normalizing Maven source URLs for Maven Central ==="
+
+          jq '
+            .components |= map(
+              if (.purl // "" | startswith("pkg:maven/")) and .group and .version then
+                (. as $component |
+                 ("https://repo1.maven.org/maven2/" +
+                  ($component.group | gsub("\\."; "/")) +
+                  "/" + $component.name + "/" + $component.version + "/" +
+                  $component.name + "-" + $component.version + "-sources.jar") as $source_url |
+                 .externalReferences = [
+                   (.externalReferences // [])[] |
+                   select(
+                     .type != "source-distribution" and
+                     (.type != "distribution" or .comment != "source archive (download location)")
+                   )
+                 ] + [{
+                   "type": "distribution",
+                   "comment": "source archive (download location)",
+                   "url": $source_url
+                 }]
+                )
+              else . end
+            )
+          ' "$sbom_path" > "${sbom_path}.tmp" && mv "${sbom_path}.tmp" "$sbom_path"
 
       - name: Checkout CapyCLI fork
         uses: actions/checkout@v4
@@ -183,8 +212,10 @@ jobs:
           fi
           echo "Incomplete mapping is acceptable on first run - continuing to create components/releases."
 
-      - name: Create missing components and releases
+      - name: Bootstrap missing components and prerequisite releases
         run: |
+          # This creates the SW360 release IDs needed by the clearing-state
+          # filter. The final release creation/attachment runs after FOSSology.
           python -m capycli bom createcomponents \
             -i mapped-sbom.json \
             -o created-sbom.json \
@@ -200,7 +231,13 @@ jobs:
             exit 1
           fi
           size=$(stat -c%s created-sbom.json)
-          echo "created-sbom.json: $size bytes"
+          total=$(jq '.components | length' created-sbom.json)
+          with_ids=$(jq '[.components[] | select(.properties[]?.name == "siemens:sw360Id")] | length' created-sbom.json)
+          echo "created-sbom.json: $size bytes, $with_ids/$total components with sw360Id"
+          if [ "$total" -eq 0 ] || [ "$with_ids" -ne "$total" ]; then
+            echo "ERROR: Not every SBOM component has a SW360 release ID"
+            exit 1
+          fi
 
       - name: Upload mapping results (debug)
         if: failure()
@@ -215,6 +252,7 @@ jobs:
         with:
           name: created-sbom
           path: created-sbom.json
+          if-no-files-found: error
           retention-days: 7
 
   # ────────────────────────────────────────────────────────────────────────────
@@ -317,6 +355,7 @@ jobs:
         with:
           name: project-id
           path: project-id.txt
+          if-no-files-found: error
           retention-days: 7
 
   # ╔══════════════════════════════════════════════════════════════════════════╗
@@ -350,7 +389,6 @@ jobs:
           sw360_url="${{ vars.SW360_URL }}"
           token="${{ secrets.SW360_TOKEN }}"
           sbom_path="created-sbom.json"
-          out_path="$sbom_path"
 
           total=$(jq '.components | length' "$sbom_path")
           echo "=== Filtering $total components by clearing state ==="
@@ -381,7 +419,7 @@ jobs:
 
             if [ -z "$sw360_id" ] || [ "$sw360_id" = "null" ]; then
               comp=$(add_clearing_state "$comp" "NO_SW360_ID")
-              jq ". + [$comp]" "$included_file" > "${included_file}.tmp" && mv "${included_file}.tmp" "$included_file"
+              jq --argjson component "$comp" '. + [$component]' "$included_file" > "${included_file}.tmp" && mv "${included_file}.tmp" "$included_file"
               echo "  [INCLUDE] $name@$version (no SW360 ID)"
               continue
             fi
@@ -391,8 +429,8 @@ jobs:
 
             if [ -z "$response" ]; then
               comp=$(add_clearing_state "$comp" "QUERY_ERROR")
-              jq ". + [$comp]" "$included_file" > "${included_file}.tmp" && mv "${included_file}.tmp" "$included_file"
-              jq ". + [$comp]" "$errors_file" > "${errors_file}.tmp" && mv "${errors_file}.tmp" "$errors_file"
+              jq --argjson component "$comp" '. + [$component]' "$included_file" > "${included_file}.tmp" && mv "${included_file}.tmp" "$included_file"
+              jq --argjson component "$comp" '. + [$component]' "$errors_file" > "${errors_file}.tmp" && mv "${errors_file}.tmp" "$errors_file"
               echo "  [INCLUDE] $name@$version - query error"
               continue
             fi
@@ -401,26 +439,37 @@ jobs:
 
             if [ -z "$clearing_state" ]; then
               comp=$(add_clearing_state "$comp" "UNKNOWN")
-              jq ". + [$comp]" "$included_file" > "${included_file}.tmp" && mv "${included_file}.tmp" "$included_file"
+              jq --argjson component "$comp" '. + [$component]' "$included_file" > "${included_file}.tmp" && mv "${included_file}.tmp" "$included_file"
               echo "  [INCLUDE] $name@$version (no clearing state)"
             elif [ "$clearing_state" = "REPORT_AVAILABLE" ] || [ "$clearing_state" = "APPROVED" ]; then
               comp=$(add_clearing_state "$comp" "$clearing_state")
-              jq ". + [$comp]" "$skipped_file" > "${skipped_file}.tmp" && mv "${skipped_file}.tmp" "$skipped_file"
+              jq --argjson component "$comp" '. + [$component]' "$skipped_file" > "${skipped_file}.tmp" && mv "${skipped_file}.tmp" "$skipped_file"
               echo "  [SKIP]    $name@$version - clearingState=$clearing_state"
             else
               comp=$(add_clearing_state "$comp" "$clearing_state")
-              jq ". + [$comp]" "$included_file" > "${included_file}.tmp" && mv "${included_file}.tmp" "$included_file"
+              jq --argjson component "$comp" '. + [$component]' "$included_file" > "${included_file}.tmp" && mv "${included_file}.tmp" "$included_file"
               echo "  [INCLUDE] $name@$version - clearingState=$clearing_state"
             fi
           done
 
-          # Keep one SBOM file shape: enrich components, then overwrite the input file.
-          jq --slurpfile included "$included_file" '.components = $included[0]' "$sbom_path" > "$out_path.tmp"
+          # Preserve every component, enriching both included and skipped entries.
+          enriched_path="enriched-sbom.json"
+          jq --slurpfile included "$included_file" --slurpfile skipped "$skipped_file" '
+            ($included[0] + $skipped[0]) as $classified |
+            .components = [
+              .components[] as $original |
+              (($classified | map(select(."bom-ref" == $original."bom-ref")) | first) // $original)
+            ]
+          ' "$sbom_path" > "$enriched_path"
 
-          # Filter dependencies using temp file
+          # Build the scan-only SBOM from the enriched all-components SBOM.
           jq '[.[]."bom-ref"]' "$included_file" > "${included_file}.refs"
 
           jq --slurpfile included_refs "${included_file}.refs" '
+            .components = [
+              .components[] as $component |
+              select($included_refs[0] | index($component."bom-ref") != null)
+            ] |
             if .dependencies then
               .dependencies = [
                 .dependencies[] | select(.ref as $r | $included_refs[0] | index($r) != null) |
@@ -430,8 +479,7 @@ jobs:
                 select((.dependsOn | length) > 0 or (.dependsOn == null))
               ]
             else . end
-          ' "$out_path.tmp" > "$sbom_path"
-          rm -f "$out_path.tmp"
+          ' "$enriched_path" > "filtered-sbom.json"
 
           included_count=$(jq 'length' "$included_file")
           skipped_count=$(jq 'length' "$skipped_file")
@@ -445,22 +493,39 @@ jobs:
           echo "Included (need scan): $included_count"
           echo "Skipped (already cleared): $skipped_count"
           echo "Query errors:         $errors_count"
+          echo "Enriched SBOM:        $enriched_path"
+          echo "Filtered SBOM:        filtered-sbom.json"
 
       - name: Verify filtered SBOM
         run: |
-          if [ ! -f created-sbom.json ]; then
-            echo "ERROR: created-sbom.json not found"
+          if [ ! -f enriched-sbom.json ] || [ ! -f filtered-sbom.json ]; then
+            echo "ERROR: enriched-sbom.json or filtered-sbom.json not found"
             exit 1
           fi
-          comp_count=$(jq '.components | length' created-sbom.json)
-          state_count=$(jq '[.components[] | select(.properties[]?.name == "siemens:clearingState")] | length' created-sbom.json)
-          echo "created-sbom.json: $comp_count components remaining, $state_count with clearing state"
+          all_count=$(jq '.components | length' enriched-sbom.json)
+          filtered_count=$(jq '.components | length' filtered-sbom.json)
+          state_count=$(jq '[.components[] | select(.properties[]?.name == "siemens:clearingState")] | length' enriched-sbom.json)
+          echo "enriched-sbom.json: $all_count components, $state_count with clearing state"
+          echo "filtered-sbom.json: $filtered_count components to scan"
+          if [ "$all_count" -eq 0 ] || [ "$state_count" -ne "$all_count" ]; then
+            echo "ERROR: Enriched SBOM is missing clearing state values"
+            exit 1
+          fi
+
+      - name: Upload enriched SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: enriched-sbom
+          path: enriched-sbom.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Upload filtered SBOM
         uses: actions/upload-artifact@v4
         with:
           name: filtered-sbom
-          path: created-sbom.json
+          path: filtered-sbom.json
+          if-no-files-found: error
           retention-days: 7
 
   # ────────────────────────────────────────────────────────────────────────────
@@ -483,103 +548,34 @@ jobs:
         with:
           name: filtered-sbom
 
-      - name: Checkout CapyCLI fork
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/capycli
-          ref: feat/sw360/upload_reports
-          path: ${{ env.CAPYCLI_DIR }}
-          clean: true
+      - name: Determine whether scanning is required
+        id: scan-needed
+        run: |
+          filtered_count=$(jq '.components | length' filtered-sbom.json)
+          if [ "$filtered_count" -gt 0 ]; then
+            echo "required=true" >> "$GITHUB_OUTPUT"
+            echo "Scanning is required for $filtered_count components"
+          else
+            echo "required=false" >> "$GITHUB_OUTPUT"
+            echo "No components require scanning"
+          fi
+
+      - name: Initialize source manifest
+        run: echo '[]' > source-manifest.json
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Get capycli commit SHA
-        id: capycli-sha
-        run: |
-          cd ${{ env.CAPYCLI_DIR }}
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Cache capycli installation
-        id: cache-capycli
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.CAPYCLI_DIR }}/.installed
-          key: capycli-${{ runner.os }}-py3.11-${{ steps.capycli-sha.outputs.sha }}
-
-      - name: Install CapyCLI
-        if: steps.cache-capycli.outputs.cache-hit != 'true'
-        run: |
-          pip install . --force-reinstall
-          mkdir -p ${{ env.CAPYCLI_DIR }}/.installed
-          touch ${{ env.CAPYCLI_DIR }}/.installed/marker
-        working-directory: ${{ env.CAPYCLI_DIR }}
-
-      - name: Fix Maven source URLs in SBOM
-        run: |
-          sbom_path="created-sbom.json"
-          echo "=== Fixing Maven source URLs for Maven Central ==="
-          fixed=0
-
-          # Rewrite the CycloneDX source external reference for Maven components
-          # so CapyCLI passes the Maven Central source JAR URL to SW360.
-          jq '
-            .components |= map(
-              if (.purl // "" | startswith("pkg:maven/")) and .group and .version then
-                (. as $component |
-                 ("https://repo1.maven.org/maven2/" +
-                  ($component.group | gsub("\\."; "/")) +
-                  "/" + $component.name + "/" + $component.version + "/" +
-                  $component.name + "-" + $component.version + "-sources.jar") as $source_url |
-                 .externalReferences = [
-                   (.externalReferences // [])[] |
-                   select(
-                     .type != "source-distribution" and
-                     (.type != "distribution" or .comment != "source archive (download location)")
-                   )
-                 ] + [{
-                   "type": "distribution",
-                   "comment": "source archive (download location)",
-                   "url": $source_url
-                 }]
-                )
-              else . end
-            )
-          ' "$sbom_path" > "${sbom_path}.tmp" && mv "${sbom_path}.tmp" "$sbom_path"
-
-          # Show what URLs were fixed
-          jq -r '
-            .components[]? |
-            select(.purl // "" | startswith("pkg:maven/")) |
-            (((.externalReferences // []) |
-              map(select(.type == "distribution" and .comment == "source archive (download location)") | .url) |
-              first) as $source_url |
-             "  \(.name)@\(.version): \($source_url // "(none)")")
-          ' "$sbom_path"
-
-      - name: Create sourced-sbom.json
-        run: |
-          cp created-sbom.json sourced-sbom.json
-          with_ids=$(jq '[.components[] | select(.properties[]?.name == "siemens:sw360Id")] | length' sourced-sbom.json)
-          echo "sourced-sbom.json: $with_ids components with sw360Id"
-
-      - name: Verify sourced SBOM
-        run: |
-          if [ ! -f sourced-sbom.json ]; then
-            echo "ERROR: sourced-sbom.json not found"
-            exit 1
-          fi
-          echo "sourced-sbom.json: $(stat -c%s sourced-sbom.json) bytes"
-
       - name: Pre-create package directories 
+        if: steps.scan-needed.outputs.required == 'true'
         run: |
           mkdir -p pkg_downloads results
           echo "Ensuring package directories exist..."
           jq -r '
             .components[]? |
             [.purl, .name, .version] | @tsv
-          ' created-sbom.json 2>/dev/null | while IFS=$'\t' read -r purl name version; do
+          ' filtered-sbom.json 2>/dev/null | while IFS=$'\t' read -r purl name version; do
             if [ -n "$purl" ] && [ -n "$name" ] && [ -n "$version" ]; then
               type="${purl#pkg:}"
               type="${type%%/*}"
@@ -588,17 +584,170 @@ jobs:
           done
           echo "Done."
 
+      - name: Download Maven source archives for FOSSology
+        if: steps.scan-needed.outputs.required == 'true'
+        run: |
+          echo "=== Downloading Maven source archives ==="
+          jq -r '
+            .components[]? |
+            select((.purl // "") | startswith("pkg:maven/")) |
+            [
+              .name,
+              .version,
+              ((.externalReferences // [])
+                | map(select(
+                    .url and (
+                      .type == "source-distribution" or
+                      .comment == "source archive (download location)"
+                    )
+                  ) | .url)
+                | first // "")
+            ] | @tsv
+          ' filtered-sbom.json | while IFS=$'\t' read -r name version source_url; do
+            if [ -z "$name" ] || [ -z "$version" ] || [ -z "$source_url" ]; then
+              echo "  [WARN] No Maven source URL for ${name:-unknown}@${version:-unknown}"
+              continue
+            fi
+
+            destination="pkg_downloads/maven/$name/$version"
+            mkdir -p "$destination"
+            archive_name=$(basename "${source_url%%\?*}")
+            archive="$destination/$archive_name"
+
+            if [ ! -f "$archive" ]; then
+              echo "  [GET]  $name@$version <- $source_url"
+              curl --fail --location --retry 3 --retry-delay 2 "$source_url" -o "$archive"
+            else
+              echo "  [SKIP] $name@$version (already downloaded)"
+            fi
+
+            if ! unzip -tq "$archive" >/dev/null 2>&1; then
+              echo "ERROR: Maven source archive is not a valid ZIP/JAR: $archive"
+              exit 1
+            fi
+            unzip -oq "$archive" -d "$destination"
+          done
+
       - name: Run FOSSology analysis 
+        if: steps.scan-needed.outputs.required == 'true'
         uses: shatakshisgtiwari-jpg/fossology-action@feat/action/per-dependency-report
         with:
           scan_mode: "scan-only-deps"
           scanners: "ojo copyright nomos"
           report_format: "SPDX_JSON"
-          sbom_path: "created-sbom.json"
+          sbom_path: "filtered-sbom.json"
           per_dependency_report: "true"
           report_dir: "per-dependency-reports"
 
+      - name: Stage downloaded sources for SW360 upload
+        if: steps.scan-needed.outputs.required == 'true'
+        env:
+          SOURCE_DIR: ${{ env.SOURCE_DIR }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import hashlib
+          import os
+          import shutil
+          from pathlib import Path
+          from urllib.parse import urlparse
+
+          sbom_path = Path("filtered-sbom.json")
+          scanner_root = Path("pkg_downloads")
+          source_dir = Path(os.environ["SOURCE_DIR"])
+          source_dir.mkdir(parents=True, exist_ok=True)
+
+          with sbom_path.open(encoding="utf-8") as stream:
+              sbom = json.load(stream)
+
+          staged = 0
+          missing = 0
+          manifest = []
+          source_hashes = {}
+          for component in sbom.get("components", []):
+              properties = component.get("properties", [])
+              release_id = next(
+                (item.get("value") for item in properties
+                 if item.get("name") == "siemens:sw360Id" and item.get("value")),
+                None,
+              )
+              source_url = next(
+                (
+                  reference.get("url")
+                  for reference in component.get("externalReferences", [])
+                  if reference.get("url")
+                  and (
+                    reference.get("type") == "source-distribution"
+                    or reference.get("comment") == "source archive (download location)"
+                  )
+                ),
+                None,
+              )
+              if not release_id or not source_url or source_url.startswith("file:"):
+                print(f"  [ERROR] No usable source URL or SW360 release ID for {component.get('name')}@{component.get('version')}")
+                missing += 1
+                continue
+
+              filename = Path(urlparse(source_url).path).name
+              if not filename:
+                print(f"  [WARN] No source filename for {component.get('name')}")
+                missing += 1
+                continue
+
+              purl = component.get("purl", "")
+              package_type = purl.removeprefix("pkg:").split("/", 1)[0] if purl else ""
+              component_dir = scanner_root / package_type / component.get("name", "") / component.get("version", "")
+              candidates = sorted(path for path in component_dir.rglob("*") if path.is_file()) if component_dir.is_dir() else []
+
+              if not candidates:
+                target = source_dir / filename
+                if target.is_file() and filename in source_hashes:
+                  staged += 1
+                  manifest.append({
+                    "bom_ref": component.get("bom-ref"),
+                    "name": component.get("name"),
+                    "version": component.get("version"),
+                    "release_id": release_id,
+                    "source_filename": target.name,
+                  })
+                  continue
+                print(f"  [WARN] Scanner did not produce a local source for {component.get('name')}@{component.get('version')}")
+                missing += 1
+                continue
+
+              preferred = next((path for path in candidates if path.name == filename), candidates[0])
+              preferred_hash = hashlib.sha256(preferred.read_bytes()).hexdigest()
+              target = source_dir / filename
+              if target.is_file():
+                target_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+                if target_hash != preferred_hash:
+                  raise SystemExit(
+                    f"Source filename collision for {filename}: "
+                    f"{component.get('name')}@{component.get('version')} has different content"
+                  )
+              else:
+                shutil.copy2(preferred, target)
+              source_hashes[filename] = preferred_hash
+              print(f"  [OK] {component.get('name')}@{component.get('version')} -> {target}")
+              staged += 1
+              manifest.append({
+                "bom_ref": component.get("bom-ref"),
+                "name": component.get("name"),
+                "version": component.get("version"),
+                "release_id": release_id,
+                "source_filename": target.name,
+              })
+
+          print(f"Staged source files: {staged}; components without local source files: {missing}")
+          with Path("source-manifest.json").open("w", encoding="utf-8") as stream:
+              json.dump(manifest, stream, indent=2)
+              stream.write("\n")
+          if missing:
+              raise SystemExit("Source coverage is incomplete; refusing to continue")
+          PY
+
       - name: Verify FOSSology output
+        if: steps.scan-needed.outputs.required == 'true'
         run: |
           if [ ! -f "results/sbom_spdx.json" ]; then
             echo "ERROR: results/sbom_spdx.json not found"
@@ -608,25 +757,29 @@ jobs:
           report_files=$(find ${{ env.REPORT_DIR }} -name "*.spdx.json" -type f 2>/dev/null | wc -l)
           echo "Per-dependency reports: $report_files"
           if [ "$report_files" -eq 0 ]; then
-            echo "WARNING: No per-dependency reports - will use consolidated report only"
+            echo "ERROR: No per-dependency reports were produced"
+            exit 1
           fi
+          source_files=$(find ${{ env.SOURCE_DIR }} -type f 2>/dev/null | wc -l)
+          echo "Source files staged for SW360: $source_files"
 
       - name: Upload scan artifacts
-        if: success() || failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: scan-artifacts
           path: |
-            sourced-sbom.json
             results/
             ${{ env.REPORT_DIR }}/
             ${{ env.SOURCE_DIR }}/
+            source-manifest.json
+          if-no-files-found: error
           retention-days: 7
 
   # ╔══════════════════════════════════════════════════════════════════════════╗
-  # ║  STAGE 3 — Upload to SW360 & Validation                                ║
-  # ║  Uploads scan reports and source files to SW360 releases, then         ║
-  # ║  validates that all prerequisites are met for the project.             ║
+  # ║  STAGE 3 — Create releases, upload to SW360 & validation                ║
+  # ║  After FOSSology, ensures releases exist, attaches source files, uploads ║
+  # ║  scan reports, and validates that all prerequisites are met.              ║
   # ╚══════════════════════════════════════════════════════════════════════════╝
 
   # ────────────────────────────────────────────────────────────────────────────
@@ -650,10 +803,23 @@ jobs:
           name: scan-artifacts
           path: scan-output
 
-      - name: Download filtered SBOM (has all components with sw360Ids)
+      - name: Download enriched SBOM (all project components)
+        uses: actions/download-artifact@v4
+        with:
+          name: enriched-sbom
+          path: enriched-input
+
+      - name: Download filtered SBOM (components needing scan)
         uses: actions/download-artifact@v4
         with:
           name: filtered-sbom
+          path: filtered-input
+
+      - name: Download SW360 project ID
+        uses: actions/download-artifact@v4
+        with:
+          name: project-id
+          path: project-input
 
       - name: Checkout CapyCLI fork
         uses: actions/checkout@v4
@@ -690,49 +856,159 @@ jobs:
 
       - name: Restore files to working directory
         run: |
-          if [ -f "scan-output/sourced-sbom.json" ]; then
-            cp "scan-output/sourced-sbom.json" "sourced-sbom.json"
-            echo "Restored sourced-sbom.json"
-          else
-            echo "WARNING: sourced-sbom.json not found in scan-output"
-          fi
+          cp "enriched-input/enriched-sbom.json" "enriched-sbom.json"
+          cp "filtered-input/filtered-sbom.json" "filtered-sbom.json"
+          cp "project-input/project-id.txt" "project-id.txt"
+          echo "Restored enriched-sbom.json, filtered-sbom.json, and project-id.txt"
           [ -d "scan-output/results" ] && cp -r "scan-output/results" . && echo "Restored results" || true
           [ -d "scan-output/${{ env.REPORT_DIR }}" ] && cp -r "scan-output/${{ env.REPORT_DIR }}" . && echo "Restored ${{ env.REPORT_DIR }}" || true
           [ -d "scan-output/sources" ] && cp -r "scan-output/sources" . && echo "Restored sources" || true
+          cp "scan-output/source-manifest.json" "source-manifest.json"
+          echo "Restored source-manifest.json"
 
-      - name: Attach source files to SW360 releases
+      - name: Create releases and attach source files after FOSSology
         run: |
-          # Use created-sbom.json (has ALL components with sw360Ids) as input.
-          # sourced-sbom.json only has components with downloadable source URLs,
-          # which is a subset — using it would lose components.
+          # This is intentionally after the FOSSology job and before report
+          # upload. Only the filtered SBOM is processed here, so existing
+          # cleared releases are not modified or reprocessed.
           python -m capycli bom createreleases \
-            -i created-sbom.json \
-            -o final-sbom.json \
+            -i filtered-sbom.json \
+            -o processed-sbom.json \
             -url ${{ vars.SW360_URL }} \
             -t ${{ secrets.SW360_TOKEN }} \
             -source ${{ env.SOURCE_DIR }} \
             -X \
             -v
 
-      - name: Restore sw360Ids in final SBOM
+      - name: Verify source attachments on SW360
         run: |
-          echo "=== Restoring sw360Ids in final-sbom.json ==="
-          id_map=$(jq '[.components[] | {key: "\(.name)@\(.version)", value: (.properties[]? | select(.name == "siemens:sw360Id") | .value)}] | from_entries' "created-sbom.json")
-          id_count=$(echo "$id_map" | jq 'length')
-          echo "Found $id_count sw360Ids in created-sbom.json"
+          filtered_count=$(jq '.components | length' filtered-sbom.json)
+          manifest_count=$(jq 'length' source-manifest.json)
+          if [ "$manifest_count" -ne "$filtered_count" ]; then
+            echo "ERROR: Source manifest covers $manifest_count of $filtered_count filtered components"
+            exit 1
+          fi
 
-          jq --argjson id_map "$id_map" '
+          sw360_url="${{ vars.SW360_URL }}"
+          sw360_url="${sw360_url%/}"
+          token="${{ secrets.SW360_TOKEN }}"
+          verified=0
+
+          while IFS= read -r release; do
+            release_id=$(echo "$release" | jq -r '.release_id')
+            name=$(echo "$release" | jq -r '.name')
+            version=$(echo "$release" | jq -r '.version')
+            source_filename=$(echo "$release" | jq -r '.source_filename')
+            local_source="${{ env.SOURCE_DIR }}/$source_filename"
+            if [ ! -f "$local_source" ]; then
+              echo "ERROR: Staged source file is missing: $local_source"
+              exit 1
+            fi
+            expected_sha1=$(sha1sum "$local_source" | awk '{print $1}')
+            matching_source=$(curl --silent --show-error --fail-with-body \
+              --retry 3 --retry-delay 2 \
+              --header "Authorization: Token $token" \
+              "$sw360_url/resource/api/releases/$release_id/attachments" \
+              | jq -r --arg filename "$source_filename" --arg sha1 "$expected_sha1" '
+                [._embedded["sw360:attachments"][]?
+                 | select((.attachmentType // "") | startswith("SOURCE"))
+                 | select(.filename == $filename)
+                 | select(((.sha1 // "") | ascii_downcase) == ($sha1 | ascii_downcase))
+                ] | length')
+            if [ "$matching_source" -ne 1 ]; then
+              echo "ERROR: SW360 SOURCE attachment does not match $source_filename/$expected_sha1 for $name@$version ($release_id)"
+              exit 1
+            fi
+            verified=$((verified + 1))
+          done < <(jq -c '.[]' source-manifest.json)
+
+          echo "Verified SOURCE attachments on $verified SW360 releases"
+
+      - name: Assemble complete final SBOM
+        run: |
+          python3 - <<'PY'
+          import json
+
+          def component_key(component):
+              return component.get("bom-ref") or f"{component.get('name', '')}@{component.get('version', '')}"
+
+          def merge_properties(base, updated):
+              merged = {item.get("name"): item for item in base if item.get("name")}
+              for item in updated:
+                  if item.get("name"):
+                      merged[item["name"]] = item
+              return list(merged.values())
+
+          with open("enriched-sbom.json", encoding="utf-8") as stream:
+              complete = json.load(stream)
+          with open("processed-sbom.json", encoding="utf-8") as stream:
+              processed = json.load(stream)
+
+          processed_by_key = {
+              component_key(component): component
+              for component in processed.get("components", [])
+          }
+
+          final_components = []
+          for component in complete.get("components", []):
+              updated = processed_by_key.get(component_key(component))
+              if updated:
+                  merged = dict(component)
+                  merged.update(updated)
+                  merged["properties"] = merge_properties(
+                      component.get("properties", []),
+                      updated.get("properties", []),
+                  )
+                  final_components.append(merged)
+              else:
+                  final_components.append(component)
+
+          complete["components"] = final_components
+          with open("final-sbom.json", "w", encoding="utf-8") as stream:
+              json.dump(complete, stream, indent=2)
+              stream.write("\n")
+          PY
+
+          project_id=$(tr -d '[:space:]' < project-id.txt)
+          if [ -z "$project_id" ]; then
+            echo "ERROR: project-id.txt is empty"
+            exit 1
+          fi
+          sw360_url="${{ vars.SW360_URL }}"
+          sw360_url="${sw360_url%/}"
+          project_url="$sw360_url/group/guest/projects/-/project/detail/$project_id"
+
+          jq --arg project_id "$project_id" \
+             --arg project_name "${{ env.PROJECT_NAME }}" \
+             --arg project_version "${{ env.PROJECT_VERSION }}" \
+             --arg project_url "$project_url" \
+             --arg sw360_url "$sw360_url" '
+            .metadata = (.metadata // {}) |
+            .metadata.properties = ((.metadata.properties // [])
+              | map(select(
+                  .name != "siemens:sw360ProjectId" and
+                  .name != "siemens:sw360ProjectName" and
+                  .name != "siemens:sw360ProjectVersion" and
+                  .name != "siemens:sw360ProjectUrl"
+                ))
+              + [
+                  {"name": "siemens:sw360ProjectId", "value": $project_id},
+                  {"name": "siemens:sw360ProjectName", "value": $project_name},
+                  {"name": "siemens:sw360ProjectVersion", "value": $project_version},
+                  {"name": "siemens:sw360ProjectUrl", "value": $project_url}
+                ]) |
             .components |= map(
-              .key = "\(.name)@\(.version)" |
-              if $id_map[.key] and (.properties | any(.name == "siemens:sw360Id") | not) then
-                .properties += [{"name": "siemens:sw360Id", "value": $id_map[.key]}]
-              else . end |
-              del(.key)
+              . as $component |
+              (($component.properties // [])
+                | map(select(.name == "siemens:sw360Id") | .value)
+                | first) as $release_id |
+              .properties = ((.properties // [])
+                | map(select(.name != "siemens:sw360ReleaseUrl"))
+                + (if ($release_id // "") != "" then
+                     [{"name": "siemens:sw360ReleaseUrl", "value": ($sw360_url + "/resource/api/releases/" + $release_id)}]
+                   else [] end))
             )
-          ' "final-sbom.json" > "final-sbom.json.tmp" && mv "final-sbom.json.tmp" "final-sbom.json"
-
-          with_ids=$(jq '[.components[] | select(.properties[]?.name == "siemens:sw360Id")] | length' "final-sbom.json")
-          echo "final-sbom.json: $with_ids components with sw360Id"
+          ' final-sbom.json > final-sbom.json.tmp && mv final-sbom.json.tmp final-sbom.json
 
       - name: Verify final SBOM
         run: |
@@ -741,13 +1017,33 @@ jobs:
             exit 1
           fi
           size=$(stat -c%s final-sbom.json)
+          complete_count=$(jq '.components | length' enriched-sbom.json)
+          final_count=$(jq '.components | length' final-sbom.json)
           with_ids=$(jq '[.components[] | select(.properties[]?.name == "siemens:sw360Id")] | length' final-sbom.json)
-          echo "final-sbom.json: $size bytes, $with_ids components with sw360Id"
+          with_release_urls=$(jq '[.components[] | select(.properties[]?.name == "siemens:sw360ReleaseUrl")] | length' final-sbom.json)
+          project_id_count=$(jq '[.metadata.properties[]? | select(.name == "siemens:sw360ProjectId" and (.value // "") != "")] | length' final-sbom.json)
+          project_name_count=$(jq '[.metadata.properties[]? | select(.name == "siemens:sw360ProjectName" and (.value // "") != "")] | length' final-sbom.json)
+          project_version_count=$(jq '[.metadata.properties[]? | select(.name == "siemens:sw360ProjectVersion" and (.value // "") != "")] | length' final-sbom.json)
+          project_url_count=$(jq '[.metadata.properties[]? | select(.name == "siemens:sw360ProjectUrl" and (.value // "") != "")] | length' final-sbom.json)
+          echo "final-sbom.json: $size bytes, $final_count/$complete_count components, $with_ids with sw360Id, $with_release_urls with release URL"
+          if [ "$final_count" -eq 0 ] || [ "$final_count" -ne "$complete_count" ]; then
+            echo "ERROR: Final SBOM component count does not match the complete enriched SBOM"
+            exit 1
+          fi
+          if [ "$with_ids" -ne "$final_count" ] || [ "$with_release_urls" -ne "$final_count" ]; then
+            echo "ERROR: Every final SBOM component must have a SW360 release ID and release URL"
+            exit 1
+          fi
+          if [ "$project_id_count" -ne 1 ] || [ "$project_name_count" -ne 1 ] || \
+             [ "$project_version_count" -ne 1 ] || [ "$project_url_count" -ne 1 ]; then
+            echo "ERROR: Final SBOM is missing complete SW360 project metadata"
+            exit 1
+          fi
 
       - name: Upload per-dependency scan reports to SW360
         run: |
-          report_files=$(find ${{ env.REPORT_DIR }} -name "*.spdx.json" -type f 2>/dev/null)
-          report_count=$(echo "$report_files" | wc -l)
+          report_count=$(find "${{ env.REPORT_DIR }}" -name "*.spdx.json" -type f 2>/dev/null | wc -l)
+          filtered_count=$(jq '.components | length' filtered-sbom.json)
           echo "Per-dependency reports found: $report_count"
 
           if [ "$report_count" -gt 0 ]; then
@@ -757,6 +1053,7 @@ jobs:
 
             for attempt in $(seq 1 $max_retries); do
               echo "=== Upload attempt $attempt of $max_retries ==="
+              set +e
               python -m capycli bom uploadreports \
                 -i final-sbom.json \
                 --report-dir ${{ env.REPORT_DIR }} \
@@ -768,6 +1065,7 @@ jobs:
                 -X \
                 -v
               last_exit=$?
+              set -e
 
               if [ "$last_exit" -eq 0 ]; then
                 echo "Upload completed successfully on attempt $attempt"
@@ -782,11 +1080,171 @@ jobs:
             done
 
             if [ "$last_exit" -ne 0 ]; then
-              echo "::warning::Per-dependency upload failed after $max_retries attempts"
+              echo "ERROR: Per-dependency upload failed after $max_retries attempts"
+              exit "$last_exit"
             fi
+          elif [ "$filtered_count" -gt 0 ]; then
+            echo "ERROR: $filtered_count components require scan reports, but no per-dependency reports were produced"
+            exit 1
           else
-            echo "WARNING: No per-dependency reports found - skipping"
+            echo "No scan reports required because filtered-sbom.json is empty"
           fi
+
+      - name: Mark uploaded releases REPORT_AVAILABLE
+        run: |
+          filtered_count=$(jq '.components | length' filtered-sbom.json)
+          if [ "$filtered_count" -eq 0 ]; then
+            echo "No filtered releases require a clearing-state update"
+            exit 0
+          fi
+
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          report_dir = Path(os.environ["REPORT_DIR"])
+          report_names = {
+              path.name
+              for path in report_dir.iterdir()
+              if path.is_file()
+          }
+
+          def find_report(component_name, component_version):
+              exact_prefix = f"{component_name}@{component_version}"
+              for filename in report_names:
+                  if filename.startswith(exact_prefix):
+                      return filename
+
+              name_prefix = f"{component_name}@"
+              for filename in report_names:
+                  if filename.startswith(name_prefix):
+                      return filename
+
+              safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", component_name)
+              safe_version = re.sub(r"[^a-zA-Z0-9._-]", "_", component_version or "")
+              safe_exact_prefix = f"{safe_name}@{safe_version}"
+              for filename in report_names:
+                  if filename.startswith(safe_exact_prefix):
+                      return filename
+
+              safe_name_prefix = f"{safe_name}@"
+              for filename in report_names:
+                  if filename.startswith(safe_name_prefix):
+                      return filename
+
+              return None
+
+          with open("filtered-sbom.json", encoding="utf-8") as stream:
+              sbom = json.load(stream)
+
+          updates = []
+          missing = []
+          for component in sbom.get("components", []):
+              properties = component.get("properties", [])
+              release_id = next(
+                  (item.get("value") for item in properties
+                   if item.get("name") == "siemens:sw360Id" and item.get("value")),
+                  None,
+              )
+              name = component.get("name", "")
+              version = component.get("version", "")
+              report = find_report(name, version)
+
+              if not release_id or not report:
+                  missing.append({
+                      "name": name,
+                      "version": version,
+                      "release_id": release_id,
+                      "report": report,
+                  })
+                  continue
+
+              updates.append({
+                  "name": name,
+                  "version": version,
+                  "release_id": release_id,
+                  "report": report,
+              })
+
+          with open("reportable-releases.json", "w", encoding="utf-8") as stream:
+              json.dump(updates, stream, indent=2)
+
+          if missing:
+              print("ERROR: Cannot mark all filtered releases REPORT_AVAILABLE:")
+              for item in missing:
+                  print(f"  {item['name']}@{item['version']}: "
+                        f"release_id={item['release_id'] or '(missing)'}, "
+                        f"report={item['report'] or '(missing)'}")
+              raise SystemExit(1)
+
+          print(f"Prepared {len(updates)} releases for REPORT_AVAILABLE")
+          PY
+
+          sw360_url="${{ vars.SW360_URL }}"
+          sw360_url="${sw360_url%/}"
+          token="${{ secrets.SW360_TOKEN }}"
+          update_count=$(jq 'length' reportable-releases.json)
+          updated=0
+
+          while IFS= read -r release; do
+            release_id=$(echo "$release" | jq -r '.release_id')
+            name=$(echo "$release" | jq -r '.name')
+            version=$(echo "$release" | jq -r '.version')
+            release_url="$sw360_url/resource/api/releases/$release_id"
+            echo "Setting clearingState=REPORT_AVAILABLE for $name@$version ($release_id)"
+
+            curl --silent --show-error --fail-with-body \
+              --retry 3 --retry-delay 2 \
+              --request PATCH \
+              --header "Authorization: Token $token" \
+              --header "Content-Type: application/json" \
+              --data '{"clearingState":"REPORT_AVAILABLE"}' \
+              "$release_url" >/dev/null
+
+            verified_state=$(curl --silent --show-error --fail-with-body \
+              --retry 3 --retry-delay 2 \
+              --header "Authorization: Token $token" \
+              "$release_url" | jq -r '.clearingState // empty')
+            if [ "$verified_state" != "REPORT_AVAILABLE" ]; then
+              echo "ERROR: SW360 returned clearingState='$verified_state' for $name@$version"
+              exit 1
+            fi
+            updated=$((updated + 1))
+          done < <(jq -c '.[]' reportable-releases.json)
+
+          if [ "$updated" -ne "$update_count" ]; then
+            echo "ERROR: Updated $updated of $update_count releases"
+            exit 1
+          fi
+          echo "Verified REPORT_AVAILABLE on $updated SW360 releases"
+
+          jq --slurpfile updated_releases reportable-releases.json '
+            .components |= map(
+              . as $component |
+              ([.properties[]? | select(.name == "siemens:sw360Id") | .value] | first) as $release_id |
+              if ($updated_releases[0] | any(.[]; .release_id == $release_id)) then
+                .properties = ((.properties // [])
+                  | map(select(.name != "siemens:clearingState"))
+                  + [{"name": "siemens:clearingState", "value": "REPORT_AVAILABLE"}])
+              else . end
+            )
+          ' final-sbom.json > final-sbom.json.tmp && mv final-sbom.json.tmp final-sbom.json
+
+      - name: Verify final SBOM after report upload
+        run: |
+          complete_count=$(jq '.components | length' enriched-sbom.json)
+          final_count=$(jq '.components | length' final-sbom.json)
+          with_ids=$(jq '[.components[] | select(.properties[]?.name == "siemens:sw360Id")] | length' final-sbom.json)
+          with_release_urls=$(jq '[.components[] | select(.properties[]?.name == "siemens:sw360ReleaseUrl")] | length' final-sbom.json)
+          if [ "$final_count" -ne "$complete_count" ] || \
+             [ "$with_ids" -ne "$final_count" ] || \
+             [ "$with_release_urls" -ne "$final_count" ]; then
+            echo "ERROR: Report upload changed final SBOM component or SW360 release coverage"
+            exit 1
+          fi
+          echo "Final SBOM remains complete after report upload: $final_count components"
 
       - name: Upload final SBOM
         if: success()
@@ -794,6 +1252,7 @@ jobs:
         with:
           name: final-sbom
           path: final-sbom.json
+          if-no-files-found: error
           retention-days: 7
 
   # ────────────────────────────────────────────────────────────────────────────
