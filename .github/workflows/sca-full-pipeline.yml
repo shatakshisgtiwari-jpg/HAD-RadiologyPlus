@@ -62,7 +62,7 @@ jobs:
         run: npm install -g @cyclonedx/cdxgen
 
       - name: Generate SBOM
-        run: cdxgen -r -o sbom.json --spec-version 1.6 --format json
+        run: cdxgen -r -o sbom.json --spec-version 1.5 --format json
 
       - name: Verify and filter SBOM
         run: |
@@ -70,6 +70,12 @@ jobs:
             echo "::error::sbom.json not found!"
             exit 1
           fi
+          spec_version=$(jq -r '.specVersion // empty' sbom.json)
+          if [ "$spec_version" != "1.5" ]; then
+            echo "::error::Expected CycloneDX specVersion 1.5, found '$spec_version'"
+            exit 1
+          fi
+          echo "CycloneDX specVersion: $spec_version"
           before=$(jq '.components | length' sbom.json)
 
           # Remove GitHub Actions components.
@@ -184,6 +190,7 @@ jobs:
             -o created-sbom.json \
             -url ${{ vars.SW360_URL }} \
             -t ${{ secrets.SW360_TOKEN }} \
+            -X \
             -v
 
       - name: Verify and upload created SBOM
@@ -512,18 +519,30 @@ jobs:
       - name: Fix Maven source URLs in SBOM
         run: |
           sbom_path="created-sbom.json"
-          echo "=== Fixing Maven sourceCodeDownloadUrl for Maven Central ==="
+          echo "=== Fixing Maven source URLs for Maven Central ==="
           fixed=0
 
-          # Rewrite sourceCodeDownloadUrl for Maven components from VCS URLs to Maven Central source JARs
+          # Rewrite the CycloneDX source external reference for Maven components
+          # so CapyCLI passes the Maven Central source JAR URL to SW360.
           jq '
             .components |= map(
               if (.purl // "" | startswith("pkg:maven/")) and .group and .version then
-                .sourceCodeDownloadUrl = (
-                  "https://repo1.maven.org/maven2/" +
-                  (.group | gsub("\\."; "/")) +
-                  "/" + .name + "/" + .version + "/" +
-                  .name + "-" + .version + "-sources.jar"
+                (. as $component |
+                 ("https://repo1.maven.org/maven2/" +
+                  ($component.group | gsub("\\."; "/")) +
+                  "/" + $component.name + "/" + $component.version + "/" +
+                  $component.name + "-" + $component.version + "-sources.jar") as $source_url |
+                 .externalReferences = [
+                   (.externalReferences // [])[] |
+                   select(
+                     .type != "source-distribution" and
+                     (.type != "distribution" or .comment != "source archive (download location)")
+                   )
+                 ] + [{
+                   "type": "distribution",
+                   "comment": "source archive (download location)",
+                   "url": $source_url
+                 }]
                 )
               else . end
             )
@@ -533,7 +552,10 @@ jobs:
           jq -r '
             .components[]? |
             select(.purl // "" | startswith("pkg:maven/")) |
-            "  \(.name)@\(.version): \(.sourceCodeDownloadUrl // "(none)")"
+            (((.externalReferences // []) |
+              map(select(.type == "distribution" and .comment == "source archive (download location)") | .url) |
+              first) as $source_url |
+             "  \(.name)@\(.version): \($source_url // "(none)")")
           ' "$sbom_path"
 
       - name: Create sourced-sbom.json
@@ -689,6 +711,7 @@ jobs:
             -url ${{ vars.SW360_URL }} \
             -t ${{ secrets.SW360_TOKEN }} \
             -source ${{ env.SOURCE_DIR }} \
+            -X \
             -v
 
       - name: Restore sw360Ids in final SBOM
@@ -742,6 +765,7 @@ jobs:
                 -url ${{ vars.SW360_URL }} \
                 -t ${{ secrets.SW360_TOKEN }} \
                 -o final-sbom.json \
+                -X \
                 -v
               last_exit=$?
 
