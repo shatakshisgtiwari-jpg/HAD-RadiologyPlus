@@ -233,9 +233,22 @@ jobs:
           size=$(stat -c%s created-sbom.json)
           total=$(jq '.components | length' created-sbom.json)
           with_ids=$(jq '[.components[] | select(.properties[]?.name == "siemens:sw360Id")] | length' created-sbom.json)
-          echo "created-sbom.json: $size bytes, $with_ids/$total components with sw360Id"
+          with_names=$(jq '[.components[] | select(.name != null and .name != "")] | length' created-sbom.json)
+          with_versions=$(jq '[.components[] | select(.version != null and .version != "")] | length' created-sbom.json)
+          with_ext_refs=$(jq '[.components[] | select((.externalReferences // []) | length > 0)] | length' created-sbom.json)
+          echo "created-sbom.json: $size bytes, $total components"
+          echo "  sw360Id:            $with_ids/$total"
+          echo "  name:               $with_names/$total"
+          echo "  version:            $with_versions/$total"
+          echo "  externalReferences: $with_ext_refs/$total"
           if [ "$total" -eq 0 ] || [ "$with_ids" -ne "$total" ]; then
             echo "ERROR: Not every SBOM component has a SW360 release ID"
+            exit 1
+          fi
+          if [ "$with_names" -ne "$total" ]; then
+            echo "ERROR: CapyCLI dropped component names during round-trip (CycloneDX 1.7 may not be supported by cyclonedx-python-lib)"
+            echo "Dumping first component for inspection:"
+            jq '.components[0]' created-sbom.json
             exit 1
           fi
 
@@ -628,6 +641,12 @@ jobs:
             unzip -oq "$archive" -d "$destination"
           done
 
+      - name: Protect SBOM from FOSSology Docker mount
+        if: steps.scan-needed.outputs.required == 'true'
+        run: |
+          cp filtered-sbom.json filtered-sbom-pristine.json
+          sha256sum filtered-sbom.json > filtered-sbom.sha256
+
       - name: Run FOSSology analysis 
         if: steps.scan-needed.outputs.required == 'true'
         uses: shatakshisgtiwari-jpg/fossology-action@feat/action/per-dependency-report
@@ -638,6 +657,14 @@ jobs:
           sbom_path: "filtered-sbom.json"
           per_dependency_report: "true"
           report_dir: "per-dependency-reports"
+
+      - name: Restore SBOM if FOSSology modified it
+        if: steps.scan-needed.outputs.required == 'true'
+        run: |
+          if ! sha256sum -c filtered-sbom.sha256 --quiet 2>/dev/null; then
+            echo "::warning::FOSSology Docker container modified filtered-sbom.json — restoring pristine copy"
+            cp filtered-sbom-pristine.json filtered-sbom.json
+          fi
 
       - name: Stage downloaded sources for SW360 upload
         if: steps.scan-needed.outputs.required == 'true'
