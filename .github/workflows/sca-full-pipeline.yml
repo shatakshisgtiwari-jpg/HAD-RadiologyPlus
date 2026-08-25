@@ -62,7 +62,7 @@ jobs:
         run: npm install -g @cyclonedx/cdxgen
 
       - name: Generate SBOM
-        run: cdxgen -r -o sbom.json --spec-version 1.5 --format json
+        run: cdxgen -r -o sbom.json --spec-version 1.7 --format json
 
       - name: Verify and filter SBOM
         run: |
@@ -71,8 +71,8 @@ jobs:
             exit 1
           fi
           spec_version=$(jq -r '.specVersion // empty' sbom.json)
-          if [ "$spec_version" != "1.5" ]; then
-            echo "::error::Expected CycloneDX specVersion 1.5, found '$spec_version'"
+          if [ "$spec_version" != "1.7" ]; then
+            echo "::error::Expected CycloneDX specVersion 1.7, found '$spec_version'"
             exit 1
           fi
           echo "CycloneDX specVersion: $spec_version"
