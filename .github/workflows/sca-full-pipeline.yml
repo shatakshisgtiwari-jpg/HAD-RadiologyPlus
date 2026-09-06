@@ -13,7 +13,6 @@ on:
 
 permissions:
   contents: read
-  actions: write
 
 env:
   PROJECT_NAME: had-radiologyplus
@@ -37,12 +36,18 @@ jobs:
     runs-on: [self-hosted, linux]
 
     steps:
-      - name: Clean stale scanner workspace
+      - name: Remove stale scanner artifacts
         run: |
           set -euo pipefail
-          if [ -e "$GITHUB_WORKSPACE/pkg_downloads" ]; then
-            sudo rm -rf -- "$GITHUB_WORKSPACE/pkg_downloads"
-          fi
+          for path in pkg_downloads results "${{ env.REPORT_DIR }}" "${{ env.SOURCE_DIR }}" source_archives; do
+            if [ -e "$GITHUB_WORKSPACE/$path" ]; then
+              docker run --rm --user 0:0 \
+                --entrypoint /bin/sh \
+                -v "$GITHUB_WORKSPACE:/workspace" \
+                fossology/fossology:scanner \
+                -c 'rm -rf -- "/workspace/$1"' sh "$path"
+            fi
+          done
 
       - name: Checkout project
         uses: actions/checkout@v4
@@ -229,22 +234,37 @@ jobs:
 
             return None
 
+          def is_archive_download_url(url):
+            if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+              return False
+            path = urllib.parse.urlparse(url).path.lower()
+            return not (
+              # Repository pages and Git endpoints are not source archives and
+              # SW360 rejects them as sourceCodeDownloadUrl values.
+              path.endswith(".git")
+              or "/blob/" in path
+              or "/tree/" in path
+              or "/-/blob/" in path
+              or "/-/tree/" in path
+            )
+
           def existing_archive_url(component):
             for reference in component.get("externalReferences") or []:
-              if not reference.get("url"):
+              url = reference.get("url")
+              if not is_archive_download_url(url):
                 continue
               if reference.get("type") == "source-distribution":
-                return reference["url"]
+                return url
               if (
                 reference.get("type") == "distribution"
                 and reference.get("comment") == SOURCE_COMMENT
               ):
-                return reference["url"]
+                return url
 
             for prop in component.get("properties") or []:
               if prop.get("name") in {"ResolvedUrl", "resolvedUrl"}:
                 url = prop.get("value")
-                if isinstance(url, str) and url.startswith(("http://", "https://")):
+                if is_archive_download_url(url):
                   return url
             return None
 
@@ -356,6 +376,71 @@ jobs:
             exit "$rc"
           fi
           echo "Incomplete mapping is acceptable on first run - continuing to create components/releases."
+
+      - name: Reject ambiguous SW360 mappings
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          mapping_path = Path("mapping-result.json")
+          if not mapping_path.is_file():
+              raise SystemExit("Mapping result was not produced")
+
+          with mapping_path.open(encoding="utf-8") as stream:
+              mappings = json.load(stream)
+
+          unsafe_matches = []
+          for mapping in mappings:
+              matches = mapping.get("Matches") or []
+              release_ids = {
+                  match.get("Sw360Id") or match.get("Id")
+                  for match in matches
+                  if match.get("Sw360Id") or match.get("Id")
+              }
+              item = mapping.get("BomItem") or {}
+              name = item.get("name") or item.get("Name") or "unknown"
+              version = item.get("version") or item.get("Version") or "unknown"
+              requested_purl = item.get("purl") or item.get("Purl")
+              if len(release_ids) > 1:
+                  unsafe_matches.append(
+                      f"{name}@{version}: multiple candidate release IDs: "
+                      f"{', '.join(sorted(release_ids))}"
+                  )
+                  continue
+
+              # CapyCLI maps names and versions case-insensitively. A good
+              # match must still be the exact SBOM identity before it can be
+              # reused; name-only candidates are intentionally left for
+              # createcomponents to create the requested release.
+              if mapping.get("Result", "") > "4-good-match-by-filename":
+                  continue
+              for match in matches:
+                  match_name = match.get("Name") or match.get("name")
+                  match_version = match.get("Version") or match.get("version")
+                  match_purls = [
+                      match.get("RepositoryId"),
+                      (match.get("ExternalIds") or {}).get("package-url"),
+                      (match.get("ExternalIds") or {}).get("purl"),
+                  ]
+                  match_purls = [value for value in match_purls if value]
+                  if (
+                      match_name != name
+                      or match_version != version
+                      or (requested_purl and match_purls and requested_purl not in match_purls)
+                  ):
+                      unsafe_matches.append(
+                          f"{name}@{version}: candidate "
+                          f"{match_name}@{match_version} has a different exact identity"
+                      )
+
+          if unsafe_matches:
+              raise SystemExit(
+                  "Unsafe SW360 release mappings must be resolved before creation:\n  - "
+                  + "\n  - ".join(unsafe_matches)
+              )
+          print("SW360 mapping contains only exact reusable releases or createable candidates")
+          PY
 
       - name: Bootstrap missing components and prerequisite releases
         run: |
@@ -653,6 +738,10 @@ jobs:
           echo "Query errors:         $errors_count"
           echo "Enriched SBOM:        $enriched_path"
           echo "Filtered SBOM:        filtered-sbom.json"
+          if [ "$errors_count" -ne 0 ]; then
+            echo "ERROR: SW360 release queries failed; refusing to scan with unknown clearing state"
+            exit 1
+          fi
 
       - name: Verify filtered SBOM
         run: |
@@ -767,6 +856,18 @@ jobs:
           source_root = Path("source_archives")
           source_root.mkdir(parents=True, exist_ok=True)
 
+          def validate_archive(path):
+              if not path.is_file() or path.stat().st_size == 0:
+                  raise RuntimeError("downloaded archive is empty")
+              prefix = path.read_bytes()[:512].lstrip().lower()
+              if prefix.startswith((b"<html", b"<!doctype html", b"<?xml")):
+                  raise RuntimeError("downloaded content is HTML/XML, not a source archive")
+              if not (
+                  __import__("zipfile").is_zipfile(path)
+                  or __import__("tarfile").is_tarfile(path)
+              ):
+                  raise RuntimeError("downloaded content is not a supported ZIP/JAR or tar archive")
+
           with Path("filtered-sbom.json").open(encoding="utf-8") as stream:
               sbom = json.load(stream)
 
@@ -801,8 +902,14 @@ jobs:
               destination.mkdir(parents=True, exist_ok=True)
               archive = destination / filename
               if archive.is_file() and archive.stat().st_size > 0:
-                  print(f"  [SKIP] {name}@{version} source archive already retained")
-                  continue
+                  try:
+                    validate_archive(archive)
+                  except RuntimeError as error:
+                    print(f"  [REPLACE] {name}@{version}: {error}")
+                    archive.unlink()
+                  else:
+                    print(f"  [SKIP] {name}@{version} source archive already retained")
+                    continue
 
               print(f"  [GET]  {name}@{version} <- {source_url}")
               temporary = archive.with_suffix(archive.suffix + ".part")
@@ -810,12 +917,12 @@ jobs:
                   subprocess.run(
                       [
                           "curl", "--fail", "--location", "--retry", "3",
-                          "--retry-delay", "2", source_url, "-o", str(temporary),
+                          "--retry-delay", "2", "--connect-timeout", "20",
+                          "--max-time", "300", source_url, "-o", str(temporary),
                       ],
                       check=True,
                   )
-                  if not temporary.is_file() or temporary.stat().st_size == 0:
-                      raise RuntimeError("downloaded archive is empty")
+                  validate_archive(temporary)
                   temporary.replace(archive)
               except (OSError, subprocess.CalledProcessError, RuntimeError) as error:
                   temporary.unlink(missing_ok=True)
@@ -984,13 +1091,17 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Restore scanner workspace ownership
+      - name: Remove scanner workspace
         if: always()
         run: |
           set -euo pipefail
-          for path in pkg_downloads results "${{ env.REPORT_DIR }}" "${{ env.SOURCE_DIR }}"; do
+          for path in pkg_downloads results "${{ env.REPORT_DIR }}"; do
             if [ -e "$GITHUB_WORKSPACE/$path" ]; then
-              sudo chown -R "$(id -u):$(id -g)" -- "$GITHUB_WORKSPACE/$path"
+              docker run --rm --user 0:0 \
+                --entrypoint /bin/sh \
+                -v "$GITHUB_WORKSPACE:/workspace" \
+                fossology/fossology:scanner \
+                -c 'rm -rf -- "/workspace/$1"' sh "$path"
             fi
           done
 
@@ -1100,6 +1211,7 @@ jobs:
 
       - name: Verify source attachments on SW360
         run: |
+          set -o pipefail
           filtered_count=$(jq '.components | length' filtered-sbom.json)
           manifest_count=$(jq 'length' source-manifest.json)
           if [ "$manifest_count" -ne "$filtered_count" ]; then
@@ -1110,37 +1222,57 @@ jobs:
           sw360_url="${{ vars.SW360_URL }}"
           sw360_url="${sw360_url%/}"
           token="${{ secrets.SW360_TOKEN }}"
-          verified=0
 
-          while IFS= read -r release; do
-            release_id=$(echo "$release" | jq -r '.release_id')
-            name=$(echo "$release" | jq -r '.name')
-            version=$(echo "$release" | jq -r '.version')
-            source_filename=$(echo "$release" | jq -r '.source_filename')
-            local_source="${{ env.SOURCE_DIR }}/$source_filename"
-            if [ ! -f "$local_source" ]; then
-              echo "ERROR: Staged source file is missing: $local_source"
+          verify_source_attachments() {
+            local verified=0
+            while IFS= read -r release; do
+              release_id=$(echo "$release" | jq -r '.release_id')
+              name=$(echo "$release" | jq -r '.name')
+              version=$(echo "$release" | jq -r '.version')
+              source_filename=$(echo "$release" | jq -r '.source_filename')
+              local_source="${{ env.SOURCE_DIR }}/$source_filename"
+              if [ ! -f "$local_source" ]; then
+                echo "ERROR: Staged source file is missing: $local_source"
+                return 1
+              fi
+              expected_sha1=$(sha1sum "$local_source" | awk '{print $1}')
+              matching_source=$(curl --silent --show-error --fail-with-body \
+                --retry 3 --retry-delay 2 \
+                --header "Authorization: Token $token" \
+                "$sw360_url/resource/api/releases/$release_id/attachments" \
+                | jq -r --arg filename "$source_filename" --arg sha1 "$expected_sha1" '
+                  [._embedded["sw360:attachments"][]?
+                   | select((.attachmentType // "") | startswith("SOURCE"))
+                   | select(.filename == $filename)
+                   | select(((.sha1 // "") | ascii_downcase) == ($sha1 | ascii_downcase))
+                  ] | length') || return 1
+              if [ "$matching_source" -ne 1 ]; then
+                echo "SOURCE attachment does not match $source_filename/$expected_sha1 for $name@$version ($release_id)"
+                return 1
+              fi
+              verified=$((verified + 1))
+            done < <(jq -c '.[]' source-manifest.json)
+            echo "Verified SOURCE attachments on $verified SW360 releases"
+          }
+
+          for attempt in 1 2 3; do
+            if verify_source_attachments; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "ERROR: Source attachment verification failed after $attempt attempts"
               exit 1
             fi
-            expected_sha1=$(sha1sum "$local_source" | awk '{print $1}')
-            matching_source=$(curl --silent --show-error --fail-with-body \
-              --retry 3 --retry-delay 2 \
-              --header "Authorization: Token $token" \
-              "$sw360_url/resource/api/releases/$release_id/attachments" \
-              | jq -r --arg filename "$source_filename" --arg sha1 "$expected_sha1" '
-                [._embedded["sw360:attachments"][]?
-                 | select((.attachmentType // "") | startswith("SOURCE"))
-                 | select(.filename == $filename)
-                 | select(((.sha1 // "") | ascii_downcase) == ($sha1 | ascii_downcase))
-                ] | length')
-            if [ "$matching_source" -ne 1 ]; then
-              echo "ERROR: SW360 SOURCE attachment does not match $source_filename/$expected_sha1 for $name@$version ($release_id)"
-              exit 1
-            fi
-            verified=$((verified + 1))
-          done < <(jq -c '.[]' source-manifest.json)
-
-          echo "Verified SOURCE attachments on $verified SW360 releases"
+            echo "Retrying source attachment creation ($attempt/3)"
+            python -m capycli bom createreleases \
+              -i filtered-sbom.json \
+              -o processed-sbom.json \
+              -url ${{ vars.SW360_URL }} \
+              -t ${{ secrets.SW360_TOKEN }} \
+              -source ${{ env.SOURCE_DIR }} \
+              -X \
+              -v || true
+          done
 
       - name: Assemble complete final SBOM
         run: |
