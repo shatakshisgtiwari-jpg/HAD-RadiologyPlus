@@ -94,12 +94,13 @@ jobs:
           # cdxgen includes actions/checkout, actions/setup-java, etc. as SBOM
           # components. These are CI pipeline tools, not project dependencies.
           # They have no source archives, so they cannot enter the scan flow.
-          # Filter by group="actions" or name matching "actions/*" pattern.
+          # Filter action packages by their legacy names and GitHub purls.
           jq '
             . as $root |
             (.components | map(select(
               (.group // "") != "actions" and
-              ((.name // "") | test("^actions/") | not)
+              ((.name // "") | test("^actions/") | not) and
+              ((.purl // "") | startswith("pkg:github/") | not)
             ))) as $filtered |
             ($filtered | map(."bom-ref")) as $keep_refs |
             .components = $filtered |
