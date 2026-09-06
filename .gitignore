@@ -1,0 +1,8 @@
+.sca-evidence/
+scripts/
+tests/
+
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/

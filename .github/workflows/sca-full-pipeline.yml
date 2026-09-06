@@ -480,8 +480,8 @@ jobs:
 
           jq --slurpfile included_refs "${included_file}.refs" '
             .components = [
-              .components[] as $component |
-              select($included_refs[0] | index($component."bom-ref") != null)
+              .components[] |
+              select(."bom-ref" as $ref | $included_refs[0] | index($ref) != null)
             ] |
             if .dependencies then
               .dependencies = [
@@ -518,10 +518,23 @@ jobs:
           all_count=$(jq '.components | length' enriched-sbom.json)
           filtered_count=$(jq '.components | length' filtered-sbom.json)
           state_count=$(jq '[.components[] | select(.properties[]?.name == "siemens:clearingState")] | length' enriched-sbom.json)
+          invalid_filtered=$(jq '[.components[] | select(
+            if type != "object" then true
+            else
+              ((."bom-ref" // "") == "") or
+              ((.name // "") == "") or
+              ((.version // "") == "")
+            end
+          )] | length' filtered-sbom.json)
+          duplicate_filtered=$(jq '[.components[]."bom-ref"] | group_by(.) | map(select(length > 1)) | length' filtered-sbom.json)
           echo "enriched-sbom.json: $all_count components, $state_count with clearing state"
           echo "filtered-sbom.json: $filtered_count components to scan"
           if [ "$all_count" -eq 0 ] || [ "$state_count" -ne "$all_count" ]; then
             echo "ERROR: Enriched SBOM is missing clearing state values"
+            exit 1
+          fi
+          if [ "$invalid_filtered" -ne 0 ] || [ "$duplicate_filtered" -ne 0 ]; then
+            echo "ERROR: filtered-sbom.json is not a flat SBOM component list (invalid=$invalid_filtered, duplicate_bom_refs=$duplicate_filtered)"
             exit 1
           fi
 
@@ -580,6 +593,23 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Verify Linux SCA prerequisites
+        if: steps.scan-needed.outputs.required == 'true'
+        run: |
+          set -euo pipefail
+          for command_name in jq curl python3 docker; do
+            command -v "$command_name" >/dev/null || {
+              echo "ERROR: Required Linux command is unavailable: $command_name"
+              exit 1
+            }
+          done
+          docker info >/dev/null
+          if ! docker image inspect fossology/fossology:scanner >/dev/null 2>&1; then
+            echo "FOSSology scanner image is not cached; pulling it now"
+            docker pull fossology/fossology:scanner
+          fi
+          echo "Linux SCA prerequisites are available"
+
       - name: Pre-create package directories 
         if: steps.scan-needed.outputs.required == 'true'
         run: |
@@ -634,11 +664,22 @@ jobs:
               echo "  [SKIP] $name@$version (already downloaded)"
             fi
 
-            if ! unzip -tq "$archive" >/dev/null 2>&1; then
-              echo "ERROR: Maven source archive is not a valid ZIP/JAR: $archive"
-              exit 1
-            fi
-            unzip -oq "$archive" -d "$destination"
+            python3 - "$archive" "$destination" <<'PY'
+          import sys
+          import zipfile
+          from pathlib import PurePosixPath
+
+          archive_path, destination = sys.argv[1:]
+          try:
+              with zipfile.ZipFile(archive_path) as archive:
+                  for member in archive.infolist():
+                      member_path = PurePosixPath(member.filename)
+                      if member_path.is_absolute() or ".." in member_path.parts:
+                          raise SystemExit(f"Unsafe path in source archive: {member.filename}")
+                  archive.extractall(destination)
+          except (OSError, zipfile.BadZipFile) as error:
+              raise SystemExit(f"Maven source archive is not a valid ZIP/JAR: {archive_path}: {error}")
+          PY
           done
 
       - name: Protect SBOM from FOSSology Docker mount
@@ -665,6 +706,29 @@ jobs:
             echo "::warning::FOSSology Docker container modified filtered-sbom.json — restoring pristine copy"
             cp filtered-sbom-pristine.json filtered-sbom.json
           fi
+
+      - name: Verify FOSSology output
+        if: steps.scan-needed.outputs.required == 'true'
+        run: |
+          if [ ! -f "results/sbom_spdx.json" ]; then
+            echo "ERROR: results/sbom_spdx.json not found; FOSSology did not produce the consolidated report"
+            exit 1
+          fi
+          if [ ! -s "results/sbom_spdx.json" ] || ! jq empty "results/sbom_spdx.json" >/dev/null 2>&1; then
+            echo "ERROR: results/sbom_spdx.json is empty or invalid JSON"
+            exit 1
+          fi
+          report_files=$(find "${{ env.REPORT_DIR }}" -name "*.spdx.json" -type f 2>/dev/null | wc -l)
+          if [ "$report_files" -eq 0 ]; then
+            echo "ERROR: No per-dependency SPDX reports were produced"
+            exit 1
+          fi
+          invalid_reports=$(find "${{ env.REPORT_DIR }}" -name "*.spdx.json" -type f -size 0 | wc -l)
+          if [ "$invalid_reports" -ne 0 ]; then
+            echo "ERROR: $invalid_reports per-dependency SPDX report(s) are empty"
+            exit 1
+          fi
+          echo "FOSSology output verified: consolidated_report=present per_dependency_reports=$report_files"
 
       - name: Stage downloaded sources for SW360 upload
         if: steps.scan-needed.outputs.required == 'true'
@@ -773,23 +837,6 @@ jobs:
               raise SystemExit("Source coverage is incomplete; refusing to continue")
           PY
 
-      - name: Verify FOSSology output
-        if: steps.scan-needed.outputs.required == 'true'
-        run: |
-          if [ ! -f "results/sbom_spdx.json" ]; then
-            echo "ERROR: results/sbom_spdx.json not found"
-            exit 1
-          fi
-          echo "OK: results/sbom_spdx.json ($(stat -c%s results/sbom_spdx.json) bytes)"
-          report_files=$(find ${{ env.REPORT_DIR }} -name "*.spdx.json" -type f 2>/dev/null | wc -l)
-          echo "Per-dependency reports: $report_files"
-          if [ "$report_files" -eq 0 ]; then
-            echo "ERROR: No per-dependency reports were produced"
-            exit 1
-          fi
-          source_files=$(find ${{ env.SOURCE_DIR }} -type f 2>/dev/null | wc -l)
-          echo "Source files staged for SW360: $source_files"
-
       - name: Upload scan artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -800,7 +847,7 @@ jobs:
             ${{ env.REPORT_DIR }}/
             ${{ env.SOURCE_DIR }}/
             source-manifest.json
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 7
 
   # ╔══════════════════════════════════════════════════════════════════════════╗
