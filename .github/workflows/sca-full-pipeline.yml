@@ -129,34 +129,176 @@ jobs:
         with:
           name: sbom
 
-      - name: Normalize Maven source URLs
-        run: |
-          sbom_path="sbom.json"
-          echo "=== Normalizing Maven source URLs for Maven Central ==="
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-          jq '
-            .components |= map(
-              if (.purl // "" | startswith("pkg:maven/")) and .group and .version then
-                (. as $component |
-                 ("https://repo1.maven.org/maven2/" +
-                  ($component.group | gsub("\\."; "/")) +
-                  "/" + $component.name + "/" + $component.version + "/" +
-                  $component.name + "-" + $component.version + "-sources.jar") as $source_url |
-                 .externalReferences = [
-                   (.externalReferences // [])[] |
-                   select(
-                     .type != "source-distribution" and
-                     (.type != "distribution" or .comment != "source archive (download location)")
-                   )
-                 ] + [{
-                   "type": "distribution",
-                   "comment": "source archive (download location)",
-                   "url": $source_url
-                 }]
-                )
-              else . end
+      - name: Normalize source archive references
+        run: |
+          python3 - <<'PY'
+          import json
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          SBOM_PATH = Path("sbom.json")
+          SOURCE_COMMENT = "source archive (download location)"
+          SUPPORTED_TYPES = {"pypi", "npm", "composer", "maven"}
+
+          def purl_parts(purl):
+            if not isinstance(purl, str) or not purl.startswith("pkg:"):
+              return None, None, None
+            body = purl[4:].split("#", 1)[0].split("?", 1)[0]
+            try:
+              package_type, remainder = body.split("/", 1)
+              name_part, version = remainder.rsplit("@", 1)
+            except ValueError:
+              return None, None, None
+            return (
+              package_type,
+              urllib.parse.unquote(name_part),
+              urllib.parse.unquote(version),
             )
-          ' "$sbom_path" > "${sbom_path}.tmp" && mv "${sbom_path}.tmp" "$sbom_path"
+
+          def http_json(url):
+            request = urllib.request.Request(
+              url,
+              headers={"User-Agent": "had-radiologyplus-sca/1.0"},
+            )
+            with urllib.request.urlopen(request, timeout=20) as response:
+              return json.load(response)
+
+          def registry_archive_url(component):
+            package_type, purl_name, purl_version = purl_parts(component.get("purl"))
+            name = component.get("name") or purl_name
+            version = component.get("version") or purl_version
+            if not package_type or not name or not version:
+              return None
+
+            if package_type == "npm":
+              package_path = urllib.parse.quote(name, safe="@/")
+              archive_name = name.rsplit("/", 1)[-1]
+              return (
+                f"https://registry.npmjs.org/{package_path}/-/"
+                f"{archive_name}-{urllib.parse.quote(version, safe='')}.tgz"
+              )
+
+            if package_type == "maven":
+              namespace = component.get("group") or ""
+              if not namespace and purl_name and "/" in purl_name:
+                namespace, name = purl_name.rsplit("/", 1)
+              if not namespace:
+                return None
+              group_path = namespace.replace(".", "/")
+              return (
+                f"https://repo1.maven.org/maven2/{group_path}/{name}/"
+                f"{version}/{name}-{version}-sources.jar"
+              )
+
+            if package_type == "pypi":
+              metadata = http_json(
+                f"https://pypi.org/pypi/{urllib.parse.quote(name)}/"
+                f"{urllib.parse.quote(version)}/json"
+              )
+              files = metadata.get("urls", [])
+              source_files = [item for item in files if item.get("packagetype") == "sdist"]
+              wheel_files = [item for item in files if item.get("packagetype") == "bdist_wheel"]
+              selected = source_files or wheel_files
+              return selected[0].get("url") if selected else None
+
+            if package_type == "composer":
+              if "/" not in name:
+                return None
+              metadata = http_json(
+                "https://repo.packagist.org/p2/"
+                f"{urllib.parse.quote(name, safe='/')}.json"
+              )
+              releases = metadata.get("packages", {}).get(name, [])
+              for release in releases:
+                if release.get("version") == version:
+                  return (release.get("dist") or {}).get("url")
+              return None
+
+            return None
+
+          def existing_archive_url(component):
+            for reference in component.get("externalReferences") or []:
+              if not reference.get("url"):
+                continue
+              if reference.get("type") == "source-distribution":
+                return reference["url"]
+              if (
+                reference.get("type") == "distribution"
+                and reference.get("comment") == SOURCE_COMMENT
+              ):
+                return reference["url"]
+
+            for prop in component.get("properties") or []:
+              if prop.get("name") in {"ResolvedUrl", "resolvedUrl"}:
+                url = prop.get("value")
+                if isinstance(url, str) and url.startswith(("http://", "https://")):
+                  return url
+            return None
+
+          with SBOM_PATH.open(encoding="utf-8") as stream:
+            sbom = json.load(stream)
+
+          failures = []
+          for component in sbom.get("components", []):
+            package_type, _, _ = purl_parts(component.get("purl"))
+            if package_type not in SUPPORTED_TYPES:
+              failures.append(
+                f"{component.get('purl', '<missing purl>')} "
+                f"uses unsupported ecosystem '{package_type or 'unknown'}'"
+              )
+              continue
+
+            source_url = existing_archive_url(component)
+            if not source_url:
+              try:
+                source_url = registry_archive_url(component)
+              except (OSError, urllib.error.URLError, json.JSONDecodeError) as error:
+                failures.append(
+                  f"{component.get('purl', '<missing purl>')} "
+                  f"({package_type or 'unknown'} registry lookup: {error})"
+                )
+                continue
+
+            if not source_url:
+              failures.append(
+                "has no source-distribution URL or resolvable archive metadata"
+              )
+              continue
+
+            references = [
+              reference
+              for reference in component.get("externalReferences") or []
+              if not (
+                reference.get("type") == "source-distribution"
+                or (
+                  reference.get("type") == "distribution"
+                  and reference.get("comment") == SOURCE_COMMENT
+                )
+              )
+            ]
+            references.append({
+              "type": "distribution",
+              "comment": SOURCE_COMMENT,
+              "url": source_url,
+            })
+            component["externalReferences"] = references
+
+          if failures:
+            print("Unable to resolve source archives:")
+            print("\n".join(f"  - {failure}" for failure in failures))
+            raise SystemExit("Every SBOM component must have a resolvable source archive")
+
+          with SBOM_PATH.open("w", encoding="utf-8") as stream:
+            json.dump(sbom, stream, indent=2)
+            stream.write("\n")
+          print(f"Normalized source archive references for {len(sbom.get('components', []))} components")
+          PY
 
       - name: Checkout CapyCLI fork
         uses: actions/checkout@v4
@@ -165,10 +307,6 @@ jobs:
           ref: feat/sw360/upload_reports
           path: ${{ env.CAPYCLI_DIR }}
           clean: true
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
 
       - name: Get capycli commit SHA
         id: capycli-sha
@@ -610,77 +748,77 @@ jobs:
           fi
           echo "Linux SCA prerequisites are available"
 
-      - name: Pre-create package directories 
+      - name: Download source archives for FOSSology
         if: steps.scan-needed.outputs.required == 'true'
         run: |
-          mkdir -p pkg_downloads results
-          echo "Ensuring package directories exist..."
-          jq -r '
-            .components[]? |
-            [.purl, .name, .version] | @tsv
-          ' filtered-sbom.json 2>/dev/null | while IFS=$'\t' read -r purl name version; do
-            if [ -n "$purl" ] && [ -n "$name" ] && [ -n "$version" ]; then
-              type="${purl#pkg:}"
-              type="${type%%/*}"
-              mkdir -p "pkg_downloads/${type}/${name}/${version}"
-            fi
-          done
-          echo "Done."
+          python3 - <<'PY'
+          import json
+          import subprocess
+          import urllib.parse
+          from pathlib import Path
 
-      - name: Download Maven source archives for FOSSology
-        if: steps.scan-needed.outputs.required == 'true'
-        run: |
-          echo "=== Downloading Maven source archives ==="
-          jq -r '
-            .components[]? |
-            select((.purl // "") | startswith("pkg:maven/")) |
-            [
-              .name,
-              .version,
-              ((.externalReferences // [])
-                | map(select(
-                    .url and (
-                      .type == "source-distribution" or
-                      .comment == "source archive (download location)"
-                    )
-                  ) | .url)
-                | first // "")
-            ] | @tsv
-          ' filtered-sbom.json | while IFS=$'\t' read -r name version source_url; do
-            if [ -z "$name" ] || [ -z "$version" ] || [ -z "$source_url" ]; then
-              echo "  [WARN] No Maven source URL for ${name:-unknown}@${version:-unknown}"
-              continue
-            fi
+          source_root = Path("source_archives")
+          source_root.mkdir(parents=True, exist_ok=True)
 
-            destination="pkg_downloads/maven/$name/$version"
-            mkdir -p "$destination"
-            archive_name=$(basename "${source_url%%\?*}")
-            archive="$destination/$archive_name"
+          with Path("filtered-sbom.json").open(encoding="utf-8") as stream:
+              sbom = json.load(stream)
 
-            if [ ! -f "$archive" ]; then
-              echo "  [GET]  $name@$version <- $source_url"
-              curl --fail --location --retry 3 --retry-delay 2 "$source_url" -o "$archive"
-            else
-              echo "  [SKIP] $name@$version (already downloaded)"
-            fi
+          failures = []
+          for component in sbom.get("components", []):
+              source_url = next(
+                  (
+                      reference.get("url")
+                      for reference in component.get("externalReferences") or []
+                      if reference.get("url")
+                      and (
+                          reference.get("type") == "source-distribution"
+                          or reference.get("comment") == "source archive (download location)"
+                      )
+                  ),
+                  None,
+              )
+              name = component.get("name") or "unknown"
+              version = component.get("version") or "unknown"
+              purl = component.get("purl") or ""
+              package_type = purl.removeprefix("pkg:").split("/", 1)[0] or "unclassified"
+              if not source_url or source_url.startswith("file:"):
+                  failures.append(f"{purl or name + '@' + version}: missing remote source archive URL")
+                  continue
 
-            python3 - "$archive" "$destination" <<'PY'
-          import sys
-          import zipfile
-          from pathlib import PurePosixPath
+              filename = Path(urllib.parse.unquote(urllib.parse.urlparse(source_url).path)).name
+              if not filename or filename in {".", ".."}:
+                  failures.append(f"{purl or name + '@' + version}: source URL has no archive filename")
+                  continue
 
-          archive_path, destination = sys.argv[1:]
-          try:
-              with zipfile.ZipFile(archive_path) as archive:
-                  for member in archive.infolist():
-                      member_path = PurePosixPath(member.filename)
-                      if member_path.is_absolute() or ".." in member_path.parts:
-                          raise SystemExit(f"Unsafe path in source archive: {member.filename}")
-                  archive.extractall(destination)
-          except (OSError, zipfile.BadZipFile) as error:
-              raise SystemExit(f"Maven source archive is not a valid ZIP/JAR: {archive_path}: {error}")
+              destination = source_root / package_type / name / version
+              destination.mkdir(parents=True, exist_ok=True)
+              archive = destination / filename
+              if archive.is_file() and archive.stat().st_size > 0:
+                  print(f"  [SKIP] {name}@{version} source archive already retained")
+                  continue
+
+              print(f"  [GET]  {name}@{version} <- {source_url}")
+              temporary = archive.with_suffix(archive.suffix + ".part")
+              try:
+                  subprocess.run(
+                      [
+                          "curl", "--fail", "--location", "--retry", "3",
+                          "--retry-delay", "2", source_url, "-o", str(temporary),
+                      ],
+                      check=True,
+                  )
+                  if not temporary.is_file() or temporary.stat().st_size == 0:
+                      raise RuntimeError("downloaded archive is empty")
+                  temporary.replace(archive)
+              except (OSError, subprocess.CalledProcessError, RuntimeError) as error:
+                  temporary.unlink(missing_ok=True)
+                  failures.append(f"{purl or name + '@' + version}: {error}")
+
+          if failures:
+              print("Unable to retain source archives:")
+              print("\n".join(f"  - {failure}" for failure in failures))
+              raise SystemExit("Source archive coverage is incomplete")
           PY
-          done
 
       - name: Protect SBOM from FOSSology Docker mount
         if: steps.scan-needed.outputs.required == 'true'
@@ -741,20 +879,18 @@ jobs:
           import os
           import shutil
           from pathlib import Path
-          from urllib.parse import urlparse
+          from urllib.parse import unquote, urlparse
 
-          sbom_path = Path("filtered-sbom.json")
-          scanner_root = Path("pkg_downloads")
+          archive_root = Path("source_archives")
           source_dir = Path(os.environ["SOURCE_DIR"])
           source_dir.mkdir(parents=True, exist_ok=True)
 
-          with sbom_path.open(encoding="utf-8") as stream:
+          with Path("filtered-sbom.json").open(encoding="utf-8") as stream:
               sbom = json.load(stream)
 
           staged = 0
           missing = 0
           manifest = []
-          source_hashes = {}
           for component in sbom.get("components", []):
               properties = component.get("properties", [])
               release_id = next(
@@ -765,7 +901,7 @@ jobs:
               source_url = next(
                 (
                   reference.get("url")
-                  for reference in component.get("externalReferences", [])
+                  for reference in component.get("externalReferences") or []
                   if reference.get("url")
                   and (
                     reference.get("type") == "source-distribution"
@@ -774,12 +910,18 @@ jobs:
                 ),
                 None,
               )
-              if not release_id or not source_url or source_url.startswith("file:"):
-                print(f"  [ERROR] No usable source URL or SW360 release ID for {component.get('name')}@{component.get('version')}")
+              component_name = component.get("name")
+              component_version = component.get("version")
+              if not release_id:
+                print(f"  [ERROR] Missing SW360 release ID for {component_name}@{component_version}")
+                missing += 1
+                continue
+              if not source_url or source_url.startswith("file:"):
+                print(f"  [ERROR] Missing remote source archive URL for {component_name}@{component_version}")
                 missing += 1
                 continue
 
-              filename = Path(urlparse(source_url).path).name
+              filename = Path(unquote(urlparse(source_url).path)).name
               if not filename:
                 print(f"  [WARN] No source filename for {component.get('name')}")
                 missing += 1
@@ -787,27 +929,13 @@ jobs:
 
               purl = component.get("purl", "")
               package_type = purl.removeprefix("pkg:").split("/", 1)[0] if purl else ""
-              component_dir = scanner_root / package_type / component.get("name", "") / component.get("version", "")
-              candidates = sorted(path for path in component_dir.rglob("*") if path.is_file()) if component_dir.is_dir() else []
-
-              if not candidates:
-                target = source_dir / filename
-                if target.is_file() and filename in source_hashes:
-                  staged += 1
-                  manifest.append({
-                    "bom_ref": component.get("bom-ref"),
-                    "name": component.get("name"),
-                    "version": component.get("version"),
-                    "release_id": release_id,
-                    "source_filename": target.name,
-                  })
-                  continue
-                print(f"  [WARN] Scanner did not produce a local source for {component.get('name')}@{component.get('version')}")
+              archive = archive_root / package_type / component.get("name", "") / component.get("version", "") / filename
+              if not archive.is_file() or archive.stat().st_size == 0:
+                print(f"  [ERROR] Retained source archive is missing for {component_name}@{component_version}: {archive}")
                 missing += 1
                 continue
 
-              preferred = next((path for path in candidates if path.name == filename), candidates[0])
-              preferred_hash = hashlib.sha256(preferred.read_bytes()).hexdigest()
+              preferred_hash = hashlib.sha256(archive.read_bytes()).hexdigest()
               target = source_dir / filename
               if target.is_file():
                 target_hash = hashlib.sha256(target.read_bytes()).hexdigest()
@@ -817,9 +945,8 @@ jobs:
                     f"{component.get('name')}@{component.get('version')} has different content"
                   )
               else:
-                shutil.copy2(preferred, target)
-              source_hashes[filename] = preferred_hash
-              print(f"  [OK] {component.get('name')}@{component.get('version')} -> {target}")
+                shutil.copy2(archive, target)
+              print(f"  [OK] {component_name}@{component_version} -> {target}")
               staged += 1
               manifest.append({
                 "bom_ref": component.get("bom-ref"),
