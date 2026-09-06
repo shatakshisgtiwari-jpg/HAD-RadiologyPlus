@@ -37,6 +37,13 @@ jobs:
     runs-on: [self-hosted, linux]
 
     steps:
+      - name: Clean stale scanner workspace
+        run: |
+          set -euo pipefail
+          if [ -e "$GITHUB_WORKSPACE/pkg_downloads" ]; then
+            sudo rm -rf -- "$GITHUB_WORKSPACE/pkg_downloads"
+          fi
+
       - name: Checkout project
         uses: actions/checkout@v4
 
@@ -976,6 +983,16 @@ jobs:
             source-manifest.json
           if-no-files-found: warn
           retention-days: 7
+
+      - name: Restore scanner workspace ownership
+        if: always()
+        run: |
+          set -euo pipefail
+          for path in pkg_downloads results "${{ env.REPORT_DIR }}" "${{ env.SOURCE_DIR }}"; do
+            if [ -e "$GITHUB_WORKSPACE/$path" ]; then
+              sudo chown -R "$(id -u):$(id -g)" -- "$GITHUB_WORKSPACE/$path"
+            fi
+          done
 
   # ╔══════════════════════════════════════════════════════════════════════════╗
   # ║  STAGE 3 — Create releases, upload to SW360 & validation                ║
